@@ -49,16 +49,14 @@ add_subdirectory(RenderGraph)
 add_library(
   ${PROJECT_NAME} STATIC
   Presentation/WallpaperScaling.cpp
+  WPJson.cpp
+  WPPkgFs.cpp
+  Type.cpp
   Runtime/DynamicValue.cpp
   Runtime/SceneRuntimeContext.cpp
   Runtime/SceneSettingResolver.cpp
   Runtime/ScriptedDynamicValue.cpp
   Scripting/ScriptEngine.cpp
-  WPJson.cpp
-  WPPkgFs.cpp
-  Type.cpp
-  Resource/RenderTargetRegistry.cpp
-  Resource/TextureResourceResolver.cpp
   wpscene/WPImageObject.cpp
   wpscene/WPParticleObject.cpp
   wpscene/WPMaterial.cpp

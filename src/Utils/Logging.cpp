@@ -1,9 +1,9 @@
-#include "Logging.h"
+#include "Utils/Logging.h"
 #include <cstdio>
 #include <cstdarg>
 #include <filesystem>
 
-#include "Sha.hpp"
+#include "Utils/Sha.hpp"
 
 constexpr const char* level_names[] = { "INFO", "ERROR" };
 constexpr const char* level_fmt[]   = { "%-5s", "%-5s %s:%d " };

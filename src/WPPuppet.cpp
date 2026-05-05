@@ -11,12 +11,22 @@ static Quaterniond ToQuaternion(Vector3f euler) {
            AngleAxis<double>(euler.x(), axis[0]);
 };
 
+static bool HasValidParentIndex(const WPPuppet::Bone& bone, uint index)
+{
+    return bone.noParent() || bone.parent < index;
+}
+
 void WPPuppet::prepared() {
     std::vector<Affine3f> combined_tran(bones.size());
     for (uint i = 0; i < bones.size(); i++) {
         auto& b = bones[i];
-        combined_tran[i] =
-            (b.noParent() ? Affine3f::Identity() : combined_tran[b.parent]) * b.transform;
+        if (!HasValidParentIndex(b, i)) {
+            LOG_ERROR("puppet invalid parent index %u for bone %u", b.parent, i);
+            combined_tran[i] = b.transform;
+        } else {
+            combined_tran[i] =
+                (b.noParent() ? Affine3f::Identity() : combined_tran[b.parent]) * b.transform;
+        }
 
         b.offset_trans = combined_tran[i].inverse();
         /*
@@ -52,9 +62,10 @@ std::span<const Eigen::Affine3f> WPPuppet::genFrame(WPPuppetLayer& puppet_layer,
         auto&       affine = m_final_affines[i];
 
         affine = Affine3f::Identity();
-        assert(bone.parent < i || bone.noParent());
         const Affine3f parent =
-            bone.noParent() ? Affine3f::Identity() : m_final_affines[bone.parent];
+            HasValidParentIndex(bone, i) && !bone.noParent()
+                ? m_final_affines[bone.parent]
+                : Affine3f::Identity();
 
         Vector3f    trans { bone.transform.translation() * global_blend };
         Vector3f    scale { Vector3f::Ones() * global_blend };

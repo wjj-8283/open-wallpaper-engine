@@ -6,8 +6,8 @@
 #include <string_view>
 #include <exception>
 #include <stdexcept>
-#include "Logging.h"
-#include "Identity.hpp"
+#include "Utils/Logging.h"
+#include "Utils/Identity.hpp"
 
 #define STRTONUM(s, num) utils::StrToNum(s, num, __SHORT_FILE__, __LINE__);
 

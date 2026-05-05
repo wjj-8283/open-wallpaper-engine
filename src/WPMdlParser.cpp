@@ -19,7 +19,7 @@ WPPuppet::PlayMode ToPlayMode(std::string_view m) {
     if (m == "mirror") return WPPuppet::PlayMode::Mirror;
     if (m == "single") return WPPuppet::PlayMode::Single;
 
-    LOG_ERROR("unknown puppet animation play mode \"%s\"", m.data());
+    LOG_INFO("unknown puppet animation play mode \"%s\"", m.data());
     assert(m == "loop");
     return WPPuppet::PlayMode::Loop;
 }
@@ -42,8 +42,8 @@ constexpr uint32_t singile_bone_frame = 4 * 9;
 bool WPMdlParser::Parse(std::string_view path, fs::VFS& vfs, WPMdl& mdl) {
     auto str_path = std::string(path);
     auto pfile    = vfs.Open("/assets/" + str_path);
-    auto memfile  = fs::MemBinaryStream(*pfile);
     if (! pfile) return false;
+    auto memfile  = fs::MemBinaryStream(*pfile);
     auto& f = memfile;
 
     mdl.mdlv = ReadMDLVesion(f);
@@ -69,7 +69,12 @@ bool WPMdlParser::Parse(std::string_view path, fs::VFS& vfs, WPMdl& mdl) {
     if(curr == 0){
         alt_mdl_format = true;
         while (curr != alt_format_vertex_size_herald_value){
+            const idx before = f.Tell();
             curr = f.ReadUint32();
+            if (f.Tell() == before) {
+                LOG_INFO("mdl missing alt vertex herald: %s", str_path.c_str());
+                return false;
+            }
         }
         curr = f.ReadUint32();
     }
@@ -79,7 +84,7 @@ bool WPMdlParser::Parse(std::string_view path, fs::VFS& vfs, WPMdl& mdl) {
 
     uint32_t vertex_size = curr;
     if (vertex_size % (alt_mdl_format? alt_singile_vertex : singile_vertex) != 0) {
-        LOG_ERROR("unsupport mdl vertex size %d", vertex_size);
+        LOG_INFO("unsupport mdl vertex size %d", vertex_size);
         return false;
     }
 
@@ -97,7 +102,7 @@ bool WPMdlParser::Parse(std::string_view path, fs::VFS& vfs, WPMdl& mdl) {
 
     uint32_t indices_size = f.ReadUint32();
     if (indices_size % singile_indices != 0) {
-        LOG_ERROR("unsupport mdl indices size %d", indices_size);
+        LOG_INFO("unsupport mdl indices size %d", indices_size);
         return false;
     }
 
@@ -127,15 +132,14 @@ bool WPMdlParser::Parse(std::string_view path, fs::VFS& vfs, WPMdl& mdl) {
         f.ReadInt32(); // unk
 
         bone.parent = f.ReadUint32();
-        assert(bone.parent < i || bone.noParent());
         if (bone.parent >= i && ! bone.noParent()) {
-            LOG_ERROR("mdl wrong bone parent index %d", bone.parent);
+            LOG_INFO("mdl wrong bone parent index %d", bone.parent);
             return false;
         }
 
         uint32_t size = f.ReadUint32();
         if (size != 64) {
-            LOG_ERROR("mdl unsupport bones size: %d", size);
+            LOG_INFO("mdl unsupport bones size: %d", size);
             return false;
         }
         for (auto row : bone.transform.matrix().colwise()) {
@@ -188,7 +192,16 @@ bool WPMdlParser::Parse(std::string_view path, fs::VFS& vfs, WPMdl& mdl) {
     std::string mdVersion;
     
     do {
+        const idx before = f.Tell();
+        if (before >= f.Size()) {
+            LOG_INFO("mdl missing MDLA section: %s", str_path.c_str());
+            return false;
+        }
         std::string mdPrefix = f.ReadStr();
+        if (f.Tell() == before) {
+            LOG_INFO("mdl truncated while scanning sections: %s", str_path.c_str());
+            return false;
+        }
 
         // sometimes there can be other garbage in this gap, so we need to 
         // skip over that as well
@@ -226,11 +239,16 @@ bool WPMdlParser::Parse(std::string_view path, fs::VFS& vfs, WPMdl& mdl) {
                 // there can be a variable number of 32-bit 0s between animations
                 anim.id = 0;
                 while(anim.id == 0){
+                    const idx before = f.Tell();
                     anim.id = f.ReadInt32();
+                    if (f.Tell() == before) {
+                        LOG_INFO("mdl truncated while reading animation id: %s", str_path.c_str());
+                        return false;
+                    }
                 }
     
                 if (anim.id <= 0) {
-                    LOG_ERROR("wrong anime id %d", anim.id);
+                    LOG_INFO("wrong anime id %d", anim.id);
                     return false;
                 }
                 f.ReadInt32();
@@ -250,7 +268,7 @@ bool WPMdlParser::Parse(std::string_view path, fs::VFS& vfs, WPMdl& mdl) {
                     uint32_t byte_size = f.ReadUint32();
                     uint32_t num       = byte_size / singile_bone_frame;
                     if (byte_size % singile_bone_frame != 0) {
-                        LOG_ERROR("wrong bone frame size %d", byte_size);
+                        LOG_INFO("wrong bone frame size %d", byte_size);
                         return false;
                     }
                     bframes.frames.resize(num);

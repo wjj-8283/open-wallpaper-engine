@@ -1,4 +1,4 @@
-#include "Sha.hpp"
+#include "Utils/Sha.hpp"
 #include <vog/sha1.hpp>
 
 std::string utils::genSha1(std::span<const char> in) {
