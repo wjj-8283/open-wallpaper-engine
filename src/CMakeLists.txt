@@ -33,9 +33,13 @@ add_subdirectory(RenderGraph)
 
 add_library(
   ${PROJECT_NAME} STATIC
+  Presentation/WallpaperScaling.cpp
+  Runtime/DynamicValue.cpp
   WPJson.cpp
   WPPkgFs.cpp
   Type.cpp
+  Resource/RenderTargetRegistry.cpp
+  Resource/TextureResourceResolver.cpp
   wpscene/WPImageObject.cpp
   wpscene/WPParticleObject.cpp
   wpscene/WPMaterial.cpp
@@ -49,6 +53,9 @@ add_library(
   WPSoundParser.cpp
   WPMdlParser.cpp
   WPPuppet.cpp
+  Project/ProjectManifest.cpp
+  Project/ProjectProperties.cpp
+  SceneSourceResolver.cpp
   SceneWallpaper.cpp)
 
 set(InteralLib

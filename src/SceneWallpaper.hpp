@@ -1,5 +1,7 @@
 #pragma once
+#include <cstdint>
 #include <memory>
+#include <string>
 #include <string_view>
 #include <functional>
 #include "Type.hpp"
@@ -24,6 +26,13 @@ constexpr std::string_view PROPERTY_FIRST_FRAME_CALLBACK = "first_frame_callback
 #include "Core/NoCopyMove.hpp"
 class MainHandler;
 struct RenderInitInfo;
+struct SceneWallpaperConfig {
+    std::string source;
+    std::string assets;
+    std::string cache_path;
+    uint32_t fps { 15 };
+    bool paused { false };
+};
 
 class SceneWallpaper : NoCopy {
 public:
@@ -31,11 +40,18 @@ public:
     ~SceneWallpaper();
     bool init();
     bool inited() const;
+    void shutdown();
 
     void initVulkan(const RenderInitInfo&);
+    void applyConfig(const SceneWallpaperConfig&);
 
     void play();
     void pause();
+    void setPaused(bool paused);
+    void setSceneSource(std::string source);
+    void setAssetsPath(std::string assets);
+    void setCachePath(std::string cache_path);
+    void setTargetFps(uint32_t fps);
     void mouseInput(double x, double y);
 
     void setPropertyBool(std::string_view, bool);

@@ -1104,7 +1104,7 @@ void AddWPObject(std::vector<WPObjectVar>& objs, const nlohmann::json& json_obj,
 }
 } // namespace
 
-std::shared_ptr<Scene> WPSceneParser::Parse(std::string_view scene_id, const std::string& buf,
+std::shared_ptr<Scene> WPSceneParser::Parse(const SceneParseRequest& request, const std::string& buf,
                                             fs::VFS& vfs, audio::SoundManager& sm) {
     nlohmann::json json;
     if (! PARSE_JSON(buf, json)) return nullptr;
@@ -1160,7 +1160,7 @@ std::shared_ptr<Scene> WPSceneParser::Parse(std::string_view scene_id, const std
         };
     }
 
-    context.scene->scene_id = scene_id;
+    context.scene->scene_id = request.scene_id;
 
     WPShaderParser::InitGlslang();
 
@@ -1184,4 +1184,12 @@ std::shared_ptr<Scene> WPSceneParser::Parse(std::string_view scene_id, const std
 
     WPShaderParser::FinalGlslang();
     return context.scene;
+}
+
+std::shared_ptr<Scene> WPSceneParser::Parse(std::string_view scene_id, const std::string& buf,
+                                            fs::VFS& vfs, audio::SoundManager& sm) {
+    SceneParseRequest request {
+        .scene_id = std::string(scene_id),
+    };
+    return Parse(request, buf, vfs, sm);
 }

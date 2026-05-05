@@ -1,5 +1,7 @@
 #include "SceneWallpaper.hpp"
 #include "SceneWallpaperSurface.hpp"
+#include "SceneSourceResolver.hpp"
+#include "Project/ProjectProperties.hpp"
 
 #include "Utils/Logging.h"
 #include "Looper/Looper.hpp"
@@ -22,6 +24,8 @@
 #include "VulkanRender/SceneToRenderGraph.hpp"
 #include "VulkanRender/VulkanRender.hpp"
 #include <atomic>
+#include <filesystem>
+#include <fstream>
 
 using namespace wallpaper;
 
@@ -47,6 +51,12 @@ std::shared_ptr<looper::Message> CreateMsgWithCmd(const std::shared_ptr<looper::
     AddMsgCmd(*msg, cmd);
     return msg;
 }
+
+bool SetError(std::string* error, std::string message)
+{
+    if (error != nullptr) *error = std::move(message);
+    return false;
+}
 } // namespace
 
 namespace wallpaper
@@ -69,6 +79,7 @@ public:
     virtual ~MainHandler() {};
 
     bool init();
+    void shutdown();
     auto renderHandler() const { return m_render_handler; }
     bool inited() const { return m_inited; }
 
@@ -248,21 +259,50 @@ private:
 SceneWallpaper::SceneWallpaper(): m_main_handler(std::make_shared<MainHandler>()) {}
 
 SceneWallpaper::~SceneWallpaper() {
-    /*
-    if(m_offscreen) {
-        // no wait
-        auto msg = looper::Message::create(0, m_main_handler);
-        msg->setObject("self_clean", m_main_handler);
-        msg->setCleanAfterDeliver(true);
-        m_main_handler = nullptr;
-        msg->post();
-    }
-    */
+    shutdown();
 }
 
 bool SceneWallpaper::inited() const { return m_main_handler->inited(); }
 
 bool SceneWallpaper::init() { return m_main_handler->init(); }
+
+void SceneWallpaper::shutdown() {
+    if (m_main_handler != nullptr) {
+        m_main_handler->shutdown();
+    }
+}
+
+void SceneWallpaper::applyConfig(const SceneWallpaperConfig& config) {
+    setSceneSource(config.source);
+    setAssetsPath(config.assets);
+    setCachePath(config.cache_path);
+    setTargetFps(config.fps);
+    setPaused(config.paused);
+}
+
+void SceneWallpaper::setPaused(bool paused) {
+    if (paused) {
+        pause();
+        return;
+    }
+    play();
+}
+
+void SceneWallpaper::setSceneSource(std::string source) {
+    setPropertyString(PROPERTY_SOURCE, std::move(source));
+}
+
+void SceneWallpaper::setAssetsPath(std::string assets) {
+    setPropertyString(PROPERTY_ASSETS, std::move(assets));
+}
+
+void SceneWallpaper::setCachePath(std::string cache_path) {
+    setPropertyString(PROPERTY_CACHE_PATH, std::move(cache_path));
+}
+
+void SceneWallpaper::setTargetFps(uint32_t fps) {
+    setPropertyInt32(PROPERTY_FPS, static_cast<int32_t>(fps));
+}
 
 void SceneWallpaper::initVulkan(const RenderInitInfo& info) {
     m_offscreen                             = info.offscreen;
@@ -412,19 +452,24 @@ void MainHandler::loadScene() {
             return;
         }
     }
-    std::filesystem::path pkgPath_fs { m_source };
-    pkgPath_fs.replace_extension("pkg");
-    std::string pkgPath  = pkgPath_fs.native();
-    std::string pkgEntry = pkgPath_fs.filename().replace_extension("json").native();
-    std::string pkgDir   = pkgPath_fs.parent_path().native();
-    std::string scene_id = pkgPath_fs.parent_path().filename().native();
+    SceneSourceResolution source_resolution;
+    std::string           source_error;
+    if (!ResolveSceneSourcePaths(m_source, &source_resolution, &source_error)) {
+        LOG_ERROR("failed to resolve scene source %s: %s", m_source.c_str(), source_error.c_str());
+        return;
+    }
+    if (source_resolution.kind != SceneSourceResolutionKind::Scene) {
+        LOG_ERROR("unsupported wallpaper project type for %s", m_source.c_str());
+        return;
+    }
+    const auto& source_paths = source_resolution.scene_source;
 
     // load pkgfile
-    if (! vfs.Mount("/assets", fs::WPPkgFs::CreatePkgFs(pkgPath))) {
-        LOG_INFO("load pkg file %s failed, fallback to use dir", pkgPath.c_str());
+    if (! vfs.Mount("/assets", fs::WPPkgFs::CreatePkgFs(source_paths.pkg_path))) {
+        LOG_INFO("load pkg file %s failed, fallback to use dir", source_paths.pkg_path.c_str());
         // load pkg dir
-        if (! vfs.Mount("/assets", fs::CreatePhysicalFs(pkgDir))) {
-            LOG_ERROR("can't load pkg directory: %s", pkgDir.c_str());
+        if (! vfs.Mount("/assets", fs::CreatePhysicalFs(source_paths.pkg_dir))) {
+            LOG_ERROR("can't load pkg directory: %s", source_paths.pkg_dir.c_str());
             return;
         }
     }
@@ -437,10 +482,11 @@ void MainHandler::loadScene() {
     }
 
     {
-        std::string       scene_src;
+        std::string      scene_src;
+        ProjectProperties project_properties;
         const std::string base { "/assets/" };
         {
-            std::string scenePath = base + pkgEntry;
+            std::string scenePath = base + source_paths.pkg_entry;
             if (vfs.Contains(scenePath)) {
                 auto f = vfs.Open(scenePath);
                 if (f) scene_src = f->ReadAllStr();
@@ -450,7 +496,16 @@ void MainHandler::loadScene() {
             LOG_ERROR("Not supported scene type");
             return;
         }
-        scene = m_scene_parser.Parse(scene_id, scene_src, vfs, *m_sound_manager);
+        if (!ParseProjectProperties(m_source, &project_properties, &source_error)) {
+            LOG_ERROR("failed to parse project properties %s: %s", m_source.c_str(), source_error.c_str());
+            return;
+        }
+        SceneParseRequest request {
+            .scene_id = source_paths.scene_id,
+            .project_path = m_source,
+            .project_properties = &project_properties,
+        };
+        scene = m_scene_parser.Parse(request, scene_src, vfs, *m_sound_manager);
         scene->vfs.swap(pVfs);
     }
 
@@ -473,6 +528,26 @@ void MainHandler::sendCmdLoadScene() {
 void MainHandler::sendFirstFrameOk() {
     auto msg = CreateMsgWithCmd(shared_from_this(), MainHandler::CMD::CMD_FIRST_FRAME);
     msg->post();
+}
+
+void MainHandler::shutdown() {
+    if (!m_inited) return;
+    if (m_sound_manager->IsInited()) {
+        m_sound_manager->Pause();
+    }
+    if (m_render_handler != nullptr) {
+        m_render_handler->frame_timer.Stop();
+    }
+    if (m_render_loop != nullptr && m_render_handler != nullptr &&
+        m_render_handler->id() != looper::Handler::INVALID_HANDLER_ID) {
+        m_render_loop->unregisterHandler(m_render_handler->id());
+    }
+    if (m_main_loop != nullptr && id() != looper::Handler::INVALID_HANDLER_ID) {
+        m_main_loop->unregisterHandler(id());
+    }
+    if (m_render_loop != nullptr) m_render_loop->stop();
+    if (m_main_loop != nullptr) m_main_loop->stop();
+    m_inited = false;
 }
 
 bool MainHandler::init() {
