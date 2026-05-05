@@ -1,6 +1,24 @@
 include(FetchContent)
 set(CMAKE_POLICY_DEFAULT_CMP0077 NEW)
 
+get_filename_component(WESCENE_ROOT_DIR "${CMAKE_CURRENT_LIST_DIR}/.." ABSOLUTE)
+
+if(NOT DEFINED FETCHCONTENT_BASE_DIR)
+    set(
+        FETCHCONTENT_BASE_DIR
+        "${WESCENE_ROOT_DIR}/build/_fetchcontent"
+        CACHE PATH "Shared FetchContent cache for wescene-renderer dependencies"
+    )
+endif()
+
+if(NOT DEFINED FETCHCONTENT_UPDATES_DISCONNECTED)
+    set(
+        FETCHCONTENT_UPDATES_DISCONNECTED
+        ON
+        CACHE BOOL "Avoid refreshing FetchContent dependencies during normal local configures"
+    )
+endif()
+
 # ------------------------------------------------------------------
 # Locally vendored deps still living under third_party/
 # (glad, effolkronium, vog, stb_image.h, vk_mem_alloc.h)
@@ -14,7 +32,7 @@ add_subdirectory(glad)
 # pass:
 #   -DCMAKE_PROJECT_TOP_LEVEL_INCLUDES=cmake/FetchDepsProvider.cmake
 # ------------------------------------------------------------------
-include(${CMAKE_SOURCE_DIR}/cmake/FetchDeps.cmake)
+include(${WESCENE_ROOT_DIR}/cmake/FetchDeps.cmake)
 
 # Cache vars consumed by nested add_subdirectory calls inside fetchdeps().
 set(JSON_BuildTests         OFF CACHE INTERNAL "")
@@ -33,8 +51,18 @@ set(ENABLE_OPT              OFF CACHE INTERNAL "")
 set(ARGPARSE_INSTALL        OFF CACHE INTERNAL "")
 set(ARGPARSE_BUILD_TESTS    OFF CACHE INTERNAL "")
 set(ARGPARSE_BUILD_SAMPLES  OFF CACHE INTERNAL "")
+set(QJS_BUILD_EXAMPLES      OFF CACHE INTERNAL "")
+set(QJS_BUILD_WERROR        OFF CACHE INTERNAL "")
+set(QJS_BUILD_LIBC          OFF CACHE INTERNAL "")
+set(QJS_BUILD_CLI_STATIC    OFF CACHE INTERNAL "")
+set(QJS_BUILD_CLI_WITH_MIMALLOC OFF CACHE INTERNAL "")
+set(QJS_BUILD_CLI_WITH_STATIC_MIMALLOC OFF CACHE INTERNAL "")
 
-fetchdeps(${CMAKE_SOURCE_DIR}/deps.json)
+fetchdeps(${WESCENE_ROOT_DIR}/deps.json)
+
+if(TARGET qjs AND NOT TARGET quickjs::quickjs)
+    add_library(quickjs::quickjs ALIAS qjs)
+endif()
 
 # Post-fetch setup for eigen (header-only, source_subdir=cmake-noop).
 add_library(eigen INTERFACE)

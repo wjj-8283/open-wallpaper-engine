@@ -69,5 +69,16 @@
       "name": "argparse",
       "exclude_from_all": true
     }
+  },
+  {
+    "dest": "build/_flatpak_deps/quickjs-src",
+    "disable-shallow-clone": false,
+    "tag": "v0.12.1",
+    "type": "git",
+    "url": "https://github.com/quickjs-ng/quickjs.git",
+    "x-cmake": {
+      "name": "quickjs_ng",
+      "exclude_from_all": true
+    }
   }
 ]
