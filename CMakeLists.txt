@@ -18,6 +18,10 @@ endif()
 
 find_package(PkgConfig REQUIRED)
 
+set(_wescene_is_top_level OFF)
+if(CMAKE_SOURCE_DIR STREQUAL CMAKE_CURRENT_SOURCE_DIR)
+    set(_wescene_is_top_level ON)
+endif()
 
 include_directories(SYSTEM third_party)
 add_subdirectory(third_party)
@@ -26,19 +30,26 @@ link_libraries(Eigen3::Eigen)
 add_subdirectory(src)
 
 
-# Test suite — gated by BUILD_TESTS (default ON). Include CTest so
+# Test suite — gated by BUILD_TESTS. Include CTest so
 # gtest_discover_tests / add_test inside tests/ register with ctest.
-option(BUILD_TESTS "Build the wescene-renderer test suite" ON)
+set(_wescene_build_tests_default ${_wescene_is_top_level})
+option(BUILD_TESTS "Build the wescene-renderer test suite" ${_wescene_build_tests_default})
 if(BUILD_TESTS)
     include(CTest)
     add_subdirectory(tests)
 endif()
 
-option(BUILD_WAYWALLEN "Build the waywallen-renderer executable" ON)
+set(_wescene_build_waywallen_default ${_wescene_is_top_level})
+if(APPLE OR NOT _wescene_is_top_level)
+    set(_wescene_build_waywallen_default OFF)
+endif()
+option(BUILD_WAYWALLEN "Build the waywallen-renderer executable" ${_wescene_build_waywallen_default})
 if(BUILD_WAYWALLEN)
     add_subdirectory(waywallen)
 endif()
 
+set(_wescene_build_qml_default OFF)
+option(BUILD_QML "Build the QML helper library" ${_wescene_build_qml_default})
 if(BUILD_QML)
     find_package(Qt6 COMPONENTS Gui Quick Qml REQUIRED)
 

@@ -65,6 +65,8 @@ add_library(
   SceneSourceResolver.cpp
   SceneWallpaper.cpp)
 
+add_library(wescene::renderer ALIAS ${PROJECT_NAME})
+
 set(InteralLib
     wpAudio
     wpLooper
