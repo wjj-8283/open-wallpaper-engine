@@ -4,6 +4,7 @@
 #include "Interface/IImageParser.h"
 #include "Interface/IShaderValueUpdater.h"
 #include "Particle/ParticleSystem.h"
+#include "Runtime/SceneRuntimeContext.hpp"
 
 namespace wallpaper 
 {
@@ -12,5 +13,4 @@ Scene::Scene(): sceneGraph(std::make_shared<SceneNode>()) ,paritileSys(std::make
 Scene::~Scene() = default;
 
 }
-
 

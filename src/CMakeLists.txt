@@ -35,6 +35,8 @@ add_library(
   ${PROJECT_NAME} STATIC
   Presentation/WallpaperScaling.cpp
   Runtime/DynamicValue.cpp
+  Runtime/SceneRuntimeContext.cpp
+  Runtime/SceneSettingResolver.cpp
   Runtime/ScriptedDynamicValue.cpp
   Scripting/ScriptEngine.cpp
   WPJson.cpp
