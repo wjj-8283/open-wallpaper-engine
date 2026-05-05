@@ -35,6 +35,8 @@ add_library(
   ${PROJECT_NAME} STATIC
   Presentation/WallpaperScaling.cpp
   Runtime/DynamicValue.cpp
+  Runtime/ScriptedDynamicValue.cpp
+  Scripting/ScriptEngine.cpp
   WPJson.cpp
   WPPkgFs.cpp
   Type.cpp
@@ -74,7 +76,7 @@ set(InteralLib
 target_link_libraries(
   ${PROJECT_NAME}
   PUBLIC wpUtils
-  PRIVATE ${InteralLib} nlohmann_json ${LZ4_LIBRARIES}
+  PRIVATE ${InteralLib} nlohmann_json quickjs::quickjs ${LZ4_LIBRARIES}
           ${CMAKE_THREAD_LIBS_INIT} ${CMAKE_DL_LIBS})
 
 target_include_directories(${PROJECT_NAME} PUBLIC . Swapchain)
