@@ -35,6 +35,13 @@ set(warn_opts
 
 include_directories(.)
 
+set(PLATFORM_APPLE_SOURCES)
+if(APPLE)
+  list(APPEND PLATFORM_APPLE_SOURCES
+       Platform/Apple/FfmpegVideoInterop.mm
+       Platform/Apple/SceneWallpaperBindings.mm)
+endif()
+
 add_subdirectory(Fs)
 add_subdirectory(Utils)
 add_subdirectory(Timer)
@@ -76,7 +83,7 @@ add_library(
   Project/ProjectProperties.cpp
   Runtime/VirtualAssetRegistry.cpp
   Video/FfmpegVideoTextureSource.cpp
-  Platform/Apple/FfmpegVideoInterop.mm
+  ${PLATFORM_APPLE_SOURCES}
   SceneSourceResolver.cpp
   SceneWallpaper.cpp)
 
