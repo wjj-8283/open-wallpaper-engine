@@ -3,13 +3,16 @@
 #include <cstring>
 #include "Util.hpp"
 #include "Device.hpp"
+#include "RenderFrameStats.hpp"
 
 using namespace wallpaper::vulkan;
 
 #define CHECK_REF(ref, act)                                                  \
     if (! ref) {                                                             \
         LOG_ERROR("stage ref not available, index %d", ref.m_virtual_index); \
-        { act; }                                                             \
+        {                                                                    \
+            act;                                                             \
+        }                                                                    \
     }
 
 StagingBuffer::StagingBuffer(const Device& d, VkDeviceSize size, VkBufferUsageFlags usage)
@@ -112,6 +115,7 @@ bool StagingBuffer::increaseBuf(VkDeviceSize nsize) {
     memcpy(m_stage_raw, tmp.data(), newsize);
 
     m_gpu_buf.handle = nullptr;
+    m_dirty          = true;
     LOG_INFO("increase buffer size: %d", nsize);
     return true;
 }
@@ -137,6 +141,7 @@ void StagingBuffer::destroy() {
 
     m_stage_buf = {};
     m_gpu_buf   = {};
+    m_dirty     = true;
 }
 
 bool StagingBuffer::allocateSubRef(VkDeviceSize size, StagingBufferRef& ref,
@@ -215,14 +220,12 @@ bool StagingBuffer::writeToBuf(const StagingBufferRef& ref, std::span<uint8_t> d
     if (m_stage_raw == nullptr) {
         mapStageBuf();
     }
-    const VkDeviceSize size = std::min<VkDeviceSize>(
-        ref.size - static_cast<VkDeviceSize>(offset),
-        static_cast<VkDeviceSize>(data.size()));
-    uint8_t* const raw = static_cast<uint8_t*>(m_stage_raw);
+    const VkDeviceSize size = std::min<VkDeviceSize>(ref.size - static_cast<VkDeviceSize>(offset),
+                                                     static_cast<VkDeviceSize>(data.size()));
+    uint8_t* const     raw  = static_cast<uint8_t*>(m_stage_raw);
     std::copy(
-        data.begin(),
-        data.begin() + static_cast<std::ptrdiff_t>(size),
-        raw + ref.offset + offset);
+        data.begin(), data.begin() + static_cast<std::ptrdiff_t>(size), raw + ref.offset + offset);
+    if (size > 0) m_dirty = true;
     return true;
 }
 
@@ -232,23 +235,25 @@ bool StagingBuffer::fillBuf(const StagingBufferRef& ref, size_t offset, size_t s
     if (m_stage_raw == nullptr) {
         mapStageBuf();
     }
-    const VkDeviceSize size_ = std::min<VkDeviceSize>(
-        ref.size - static_cast<VkDeviceSize>(offset),
-        static_cast<VkDeviceSize>(size));
-    uint8_t* const raw       = static_cast<uint8_t*>(m_stage_raw);
-    uint8_t* const raw_begin = raw + ref.offset + offset;
+    const VkDeviceSize size_ = std::min<VkDeviceSize>(ref.size - static_cast<VkDeviceSize>(offset),
+                                                      static_cast<VkDeviceSize>(size));
+    uint8_t* const     raw   = static_cast<uint8_t*>(m_stage_raw);
+    uint8_t* const     raw_begin = raw + ref.offset + offset;
     std::fill(raw_begin, raw_begin + size_, c);
+    if (size_ > 0) m_dirty = true;
     return true;
 }
 
-bool StagingBuffer::recordUpload(vvk::CommandBuffer& cmd) {
+bool StagingBuffer::recordUpload(vvk::CommandBuffer& cmd, RenderFrameStats* stats) {
     if (! m_gpu_buf.handle) {
         if (auto opt = CreateGpuBuffer(m_device.vma_allocator(), m_usage, m_stage_buf.req_size);
             opt.has_value()) {
             m_gpu_buf = std::move(opt.value());
+            m_dirty   = true;
         } else
             return false;
     }
+    if (! m_dirty) return true;
     if (m_stage_raw != nullptr) {
         m_stage_buf.handle.UnMapMemory();
         m_stage_raw = nullptr;
@@ -256,6 +261,8 @@ bool StagingBuffer::recordUpload(vvk::CommandBuffer& cmd) {
     VVK_CHECK_BOOL_RE(vmaFlushAllocation(
         m_device.vma_allocator(), m_stage_buf.handle.Allocation(), 0, VK_WHOLE_SIZE));
     RecordCopyBuffer(m_gpu_buf, m_stage_buf, cmd);
+    if (stats != nullptr) stats->dynamic_upload_bytes += m_stage_buf.req_size;
+    m_dirty = false;
     return true;
 }
 

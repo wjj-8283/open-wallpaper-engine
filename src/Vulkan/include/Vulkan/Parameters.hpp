@@ -56,6 +56,7 @@ struct ExImageParameters : NoCopy {
     vvk::Image     handle;
     vvk::ImageView view;
     vvk::Sampler   sampler;
+    VkSampler      external_sampler { VK_NULL_HANDLE };
     VkExtent3D     extent;
     VkImageLayout  layout { VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL };
     uint           mipmap_level { 1 };
@@ -78,12 +79,12 @@ struct ExImageParameters : NoCopy {
 };
 
 struct ImageParameters {
-    VkImage     handle;
-    VkImageView view;
-    VkSampler   sampler;
-    VkExtent3D  extent;
+    VkImage       handle;
+    VkImageView   view;
+    VkSampler     sampler;
+    VkExtent3D    extent;
     VkImageLayout layout { VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL };
-    uint        mipmap_level { 1 };
+    uint          mipmap_level { 1 };
 
     ImageParameters()  = default;
     ~ImageParameters() = default;
@@ -97,7 +98,7 @@ struct ImageParameters {
     ImageParameters(const ExImageParameters& o) noexcept
         : handle(*o.handle),
           view(*o.view),
-          sampler(*o.sampler),
+          sampler(o.external_sampler != VK_NULL_HANDLE ? o.external_sampler : *o.sampler),
           extent(o.extent),
           layout(o.layout),
           mipmap_level(o.mipmap_level) {}

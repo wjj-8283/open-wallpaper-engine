@@ -15,6 +15,7 @@
 #include "Vulkan/VulkanExSwapchain.hpp"
 
 #include "VulkanPass.hpp"
+#include "CustomShaderPass.hpp"
 #include "PrePass.hpp"
 #include "FinPass.hpp"
 #include "Resource.hpp"
@@ -24,8 +25,11 @@
 
 #include <atomic>
 #include <cassert>
+#include <chrono>
 #include <cmath>
 #include <cstdint>
+#include <cstdlib>
+#include <string_view>
 #include <unistd.h>
 #include <vector>
 
@@ -60,8 +64,7 @@ std::vector<Extension> BaseDeviceExtensions() {
 
 namespace
 {
-const char* WallpaperScalingModeName(wallpaper::WallpaperScalingMode mode)
-{
+const char* WallpaperScalingModeName(wallpaper::WallpaperScalingMode mode) {
     switch (mode) {
     case wallpaper::WallpaperScalingMode::NONE: return "none";
     case wallpaper::WallpaperScalingMode::STRETCH: return "stretch";
@@ -72,22 +75,21 @@ const char* WallpaperScalingModeName(wallpaper::WallpaperScalingMode mode)
     return "unknown";
 }
 
-double NormalizeScaleFactor(double scale_factor)
-{
-    if (!std::isfinite(scale_factor) || scale_factor <= 0.0) return 1.0;
+double NormalizeScaleFactor(double scale_factor) {
+    if (! std::isfinite(scale_factor) || scale_factor <= 0.0) return 1.0;
     return scale_factor;
 }
 
-VkExtent2D ResolveSceneSourceExtent(const wallpaper::Scene& scene, const VkExtent2D& fallback_extent)
-{
+VkExtent2D ResolveSceneSourceExtent(const wallpaper::Scene& scene,
+                                    const VkExtent2D&       fallback_extent) {
     auto spec_rt = scene.renderTargets.find(std::string(wallpaper::SpecTex_Default));
     if (spec_rt != scene.renderTargets.end()) {
-        const auto width = static_cast<uint32_t>(std::max(1, spec_rt->second.width));
+        const auto width  = static_cast<uint32_t>(std::max(1, spec_rt->second.width));
         const auto height = static_cast<uint32_t>(std::max(1, spec_rt->second.height));
         if (width > 1 && height > 1) return { width, height };
     }
 
-    const auto ortho_width = static_cast<uint32_t>(std::max(0, scene.ortho[0]));
+    const auto ortho_width  = static_cast<uint32_t>(std::max(0, scene.ortho[0]));
     const auto ortho_height = static_cast<uint32_t>(std::max(0, scene.ortho[1]));
     if (ortho_width > 2 && ortho_height > 2) return { ortho_width, ortho_height };
 
@@ -95,6 +97,13 @@ VkExtent2D ResolveSceneSourceExtent(const wallpaper::Scene& scene, const VkExten
         std::max(1u, fallback_extent.width),
         std::max(1u, fallback_extent.height),
     };
+}
+
+bool RenderPerfLogEnabled() {
+    const char* value = std::getenv("WE_RENDER_PERF_LOG");
+    if (value == nullptr || value[0] == '\0') return false;
+    const std::string_view view(value);
+    return view != "0" && view != "false" && view != "FALSE";
 }
 
 } // namespace
@@ -107,6 +116,8 @@ struct VulkanRender::Impl {
     void destroy();
 
     void drawFrame(Scene&);
+    void beginFrameStats();
+    void finishFrameStats();
 
     bool CreateRenderingResource(RenderingResources&);
     void DestroyRenderingResource(RenderingResources&);
@@ -118,6 +129,7 @@ struct VulkanRender::Impl {
     void SetWallpaperScalingFactor(double);
 
     bool initRes();
+    void executePreparedPasses(RenderingResources&);
     void drawFrameSwapchain();
     void drawFrameOffscreen();
     void setRenderTargetSize(Scene&, rg::RenderGraph&);
@@ -143,13 +155,18 @@ struct VulkanRender::Impl {
     bool m_inited { false };
     bool m_pass_loaded { false };
 
-    std::unique_ptr<VulkanExSwapchain> m_ex_swapchain;
-    RenderingResources                 m_rendering_resources;
-    WallpaperScalingLayout             m_scaling_layout {};
-    WallpaperScalingMode              m_scaling_mode { WallpaperScalingMode::FIT };
-    double                            m_scaling_factor { 1.0 };
-    double                            m_display_scale_factor { 1.0 };
-    VkExtent2D                        m_requested_render_extent {};
+    std::unique_ptr<VulkanExSwapchain>    m_ex_swapchain;
+    RenderingResources                    m_rendering_resources;
+    WallpaperScalingLayout                m_scaling_layout {};
+    WallpaperScalingMode                  m_scaling_mode { WallpaperScalingMode::FIT };
+    double                                m_scaling_factor { 1.0 };
+    double                                m_display_scale_factor { 1.0 };
+    VkExtent2D                            m_requested_render_extent {};
+    bool                                  m_perf_log_enabled { false };
+    RenderFrameStats                      m_frame_stats {};
+    RenderFrameStats                      m_pending_frame_stats {};
+    RenderFrameStats                      m_perf_stats_accum {};
+    std::chrono::steady_clock::time_point m_last_perf_log {};
 
     // Exported dma_fence sync_file fd for the most recently completed
     // offscreen frame. Written by drawFrameOffscreen(), consumed by
@@ -201,8 +218,9 @@ wallpaper::ExSwapchain* VulkanRender::exSwapchain() const { return pImpl->m_ex_s
 bool VulkanRender::Impl::init(RenderInitInfo info) {
     if (m_inited) return true;
 
-    m_redraw_cb = info.redraw_callback;
-    m_display_scale_factor = NormalizeScaleFactor(info.display_scale_factor);
+    m_perf_log_enabled        = RenderPerfLogEnabled();
+    m_redraw_cb               = info.redraw_callback;
+    m_display_scale_factor    = NormalizeScaleFactor(info.display_scale_factor);
     m_requested_render_extent = { info.render_width, info.render_height };
     VkExtent2D extent { info.width, info.height };
     if (extent.width * extent.height < 500 * 500) {
@@ -360,7 +378,8 @@ void VulkanRender::Impl::destroy() {
 }
 
 bool VulkanRender::Impl::CreateRenderingResource(RenderingResources& rr) {
-    rr.command = m_render_cmd;
+    rr.command     = m_render_cmd;
+    rr.frame_stats = &m_pending_frame_stats;
     VVK_CHECK_BOOL_RE(m_device->handle().CreateFence(
         VkFenceCreateInfo {
             .sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO,
@@ -406,18 +425,63 @@ void VulkanRender::Impl::DestroyRenderingResource(RenderingResources& rr) {}
 
 // VulkanExSwapchain* VulkanRender::exSwapchain() const { return m_ex_swapchain.get(); }
 
+void VulkanRender::Impl::beginFrameStats() {
+    m_frame_stats.reset();
+    m_frame_stats.accumulate(m_pending_frame_stats);
+    m_pending_frame_stats.reset();
+    m_frame_stats.frames              = 1;
+    m_rendering_resources.frame_stats = &m_frame_stats;
+    if (m_device != nullptr) {
+        m_device->tex_cache().SetFrameStats(&m_frame_stats);
+    }
+}
+
+void VulkanRender::Impl::finishFrameStats() {
+    if (m_device != nullptr) {
+        m_device->tex_cache().SetFrameStats(nullptr);
+    }
+    m_rendering_resources.frame_stats = &m_pending_frame_stats;
+    if (! m_perf_log_enabled) return;
+
+    const auto now = std::chrono::steady_clock::now();
+    m_perf_stats_accum.accumulate(m_frame_stats);
+    if (m_last_perf_log.time_since_epoch().count() == 0) {
+        m_last_perf_log = now;
+        return;
+    }
+
+    const auto elapsed = std::chrono::duration<double>(now - m_last_perf_log).count();
+    if (elapsed < 1.0) return;
+
+    LOG_INFO("[render-perf] frames=%llu passes=%llu custom_draws=%llu render_passes=%llu/%llu "
+             "clear_only=%llu skipped_noop=%llu dyn_upload=%lluB fb_create=%llu tex_create=%llu "
+             "video_imports=%llu",
+             static_cast<unsigned long long>(m_perf_stats_accum.frames),
+             static_cast<unsigned long long>(m_perf_stats_accum.pass_count),
+             static_cast<unsigned long long>(m_perf_stats_accum.custom_draw_count),
+             static_cast<unsigned long long>(m_perf_stats_accum.render_pass_begin_count),
+             static_cast<unsigned long long>(m_perf_stats_accum.render_pass_end_count),
+             static_cast<unsigned long long>(m_perf_stats_accum.clear_only_pass_count),
+             static_cast<unsigned long long>(m_perf_stats_accum.skipped_noop_pass_count),
+             static_cast<unsigned long long>(m_perf_stats_accum.dynamic_upload_bytes),
+             static_cast<unsigned long long>(m_perf_stats_accum.framebuffer_creations),
+             static_cast<unsigned long long>(m_perf_stats_accum.texture_creations),
+             static_cast<unsigned long long>(m_perf_stats_accum.video_imports));
+    m_perf_stats_accum.reset();
+    m_last_perf_log = now;
+}
+
 void VulkanRender::Impl::drawFrame(Scene& scene) {
     if (! (m_inited && m_pass_loaded)) return;
+    beginFrameStats();
 
     const auto output_extent = m_device->out_extent();
     updateScalingLayout(
-        scene,
-        std::max(1u, output_extent.width),
-        std::max(1u, output_extent.height));
+        scene, std::max(1u, output_extent.width), std::max(1u, output_extent.height));
     m_rendering_resources.wallpaper_viewport = MakeWallpaperViewport(m_scaling_layout);
-    m_rendering_resources.wallpaper_scissor = MakeWallpaperScissor(m_scaling_layout);
+    m_rendering_resources.wallpaper_scissor  = MakeWallpaperScissor(m_scaling_layout);
 
-        // LOG_INFO("used ram: %fm", (m_device->GetUsage()/1024.0f)/1024.0f);
+    // LOG_INFO("used ram: %fm", (m_device->GetUsage()/1024.0f)/1024.0f);
 
 #if ENABLE_RENDERDOC_API
     if (rdoc_api)
@@ -433,11 +497,79 @@ void VulkanRender::Impl::drawFrame(Scene& scene) {
 
     if (m_redraw_cb) m_redraw_cb();
 
+    finishFrameStats();
+
 #if ENABLE_RENDERDOC_API
     if (rdoc_api)
         rdoc_api->EndFrameCapture(
             RENDERDOC_DEVICEPOINTER_FROM_VKINSTANCE((VkInstance)m_instance.inst()), NULL);
 #endif
+}
+
+void VulkanRender::Impl::executePreparedPasses(RenderingResources& rr) {
+    size_t i = 0;
+    while (i < m_passes.size()) {
+        auto* pass = m_passes[i];
+        if (pass == nullptr || ! pass->prepared()) {
+            ++i;
+            continue;
+        }
+
+        auto* custom = dynamic_cast<CustomShaderPass*>(pass);
+        if (custom == nullptr) {
+            if (rr.frame_stats != nullptr) ++rr.frame_stats->pass_count;
+            pass->execute(*m_device, rr);
+            ++i;
+            continue;
+        }
+
+        std::vector<CustomShaderPass*>        custom_passes;
+        std::vector<CustomPassBatchCandidate> candidates;
+        for (; i < m_passes.size(); ++i) {
+            auto* run_pass = m_passes[i];
+            if (run_pass == nullptr || ! run_pass->prepared()) break;
+            auto* run_custom = dynamic_cast<CustomShaderPass*>(run_pass);
+            if (run_custom == nullptr) break;
+
+            if (rr.frame_stats != nullptr) ++rr.frame_stats->pass_count;
+            custom_passes.push_back(run_custom);
+            candidates.push_back(run_custom->preRecord(*m_device, rr));
+        }
+
+        const auto plan = PlanCustomPassBatches(candidates);
+        for (const auto& entry : plan.entries) {
+            const size_t first = entry.first;
+            const size_t last  = entry.last;
+            if (entry.kind == CustomPassBatchKind::ClearImage) {
+                custom_passes[first]->recordClear(*m_device, rr);
+                continue;
+            }
+
+            VkRenderPassBeginInfo pass_begin_info {
+                .sType       = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO,
+                .pNext       = nullptr,
+                .renderPass  = entry.render.render_pass,
+                .framebuffer = entry.render.framebuffer,
+                .renderArea =
+                    VkRect2D {
+                        .offset = { 0, 0 },
+                        .extent = { entry.render.extent.width, entry.render.extent.height },
+                    },
+                .clearValueCount = 1,
+                .pClearValues    = &entry.render.clear_value,
+            };
+            rr.command.BeginRenderPass(pass_begin_info, VK_SUBPASS_CONTENTS_INLINE);
+            if (rr.frame_stats != nullptr) ++rr.frame_stats->render_pass_begin_count;
+
+            for (size_t local = first; local < last; ++local) {
+                if (! candidates[local].visible) continue;
+                custom_passes[local]->recordDraw(*m_device, rr);
+            }
+
+            rr.command.EndRenderPass();
+            if (rr.frame_stats != nullptr) ++rr.frame_stats->render_pass_end_count;
+        }
+    }
 }
 
 void VulkanRender::Impl::drawFrameSwapchain() {
@@ -462,12 +594,8 @@ void VulkanRender::Impl::drawFrameSwapchain() {
         .pNext = nullptr,
         .flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT,
     });
-    m_dyn_buf->recordUpload(rr.command);
-    for (auto* p : m_passes) {
-        if (p->prepared()) {
-            p->execute(*m_device, rr);
-        }
-    }
+    m_dyn_buf->recordUpload(rr.command, rr.frame_stats);
+    executePreparedPasses(rr);
     (void)rr.command.End();
 
     VkPipelineStageFlags wait_dst_stage = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
@@ -509,13 +637,8 @@ void VulkanRender::Impl::drawFrameOffscreen() {
         .pNext = nullptr,
         .flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT,
     });
-    m_dyn_buf->recordUpload(rr.command);
-
-    for (auto* p : m_passes) {
-        if (p->prepared()) {
-            p->execute(*m_device, rr);
-        }
-    }
+    m_dyn_buf->recordUpload(rr.command, rr.frame_stats);
+    executePreparedPasses(rr);
 
     (void)rr.command.End();
 
@@ -537,7 +660,7 @@ void VulkanRender::Impl::drawFrameOffscreen() {
     // signal it again. Stored in an atomic slot that the host reads in
     // send_frame_ready_locked via takeLastFrameSyncFd().
     {
-        int fd = -1;
+        int                     fd = -1;
         VkSemaphoreGetFdInfoKHR gi {
             .sType      = VK_STRUCTURE_TYPE_SEMAPHORE_GET_FD_INFO_KHR,
             .pNext      = nullptr,
@@ -554,17 +677,17 @@ void VulkanRender::Impl::drawFrameOffscreen() {
 }
 
 void VulkanRender::Impl::setRenderTargetSize(Scene& scene, rg::RenderGraph& rg) {
-    auto& ext = m_device->out_extent();
+    auto&      ext           = m_device->out_extent();
     const auto source_extent = ResolveSceneSourceExtent(scene, ext);
     for (auto& item : scene.renderTargets) {
         auto& rt = item.second;
         if (rt.bind.enable && rt.bind.screen) {
-            rt.width = std::max(
-                1,
-                static_cast<i32>(std::lround(rt.bind.scale * static_cast<double>(source_extent.width))));
-            rt.height = std::max(
-                1,
-                static_cast<i32>(std::lround(rt.bind.scale * static_cast<double>(source_extent.height))));
+            rt.width  = std::max(1,
+                                static_cast<i32>(std::lround(
+                                    rt.bind.scale * static_cast<double>(source_extent.width))));
+            rt.height = std::max(1,
+                                 static_cast<i32>(std::lround(
+                                     rt.bind.scale * static_cast<double>(source_extent.height))));
         }
     }
     for (auto& item : scene.renderTargets) {
@@ -589,34 +712,27 @@ void VulkanRender::Impl::setRenderTargetSize(Scene& scene, rg::RenderGraph& rg) 
                 2u;
         }
     }
-    scene.shaderValueUpdater->SetScreenSize(
-        static_cast<i32>(source_extent.width),
-        static_cast<i32>(source_extent.height));
+    scene.shaderValueUpdater->SetScreenSize(static_cast<i32>(source_extent.width),
+                                            static_cast<i32>(source_extent.height));
 }
 
-void VulkanRender::Impl::updateScalingLayout(
-    const Scene& scene,
-    uint32_t     output_width,
-    uint32_t     output_height)
-{
-    const double scale_factor = NormalizeScaleFactor(m_display_scale_factor);
-    const auto source_extent =
-        ResolveSceneSourceExtent(scene, { std::max(1u, output_width), std::max(1u, output_height) });
+void VulkanRender::Impl::updateScalingLayout(const Scene& scene, uint32_t output_width,
+                                             uint32_t output_height) {
+    const double scale_factor  = NormalizeScaleFactor(m_display_scale_factor);
+    const auto   source_extent = ResolveSceneSourceExtent(
+        scene, { std::max(1u, output_width), std::max(1u, output_height) });
     const uint32_t logical_width = std::max(
-        1u,
-        static_cast<uint32_t>(std::lround(static_cast<double>(output_width) / scale_factor)));
+        1u, static_cast<uint32_t>(std::lround(static_cast<double>(output_width) / scale_factor)));
     const uint32_t logical_height = std::max(
-        1u,
-        static_cast<uint32_t>(std::lround(static_cast<double>(output_height) / scale_factor)));
+        1u, static_cast<uint32_t>(std::lround(static_cast<double>(output_height) / scale_factor)));
 
-    m_scaling_layout = ComputeWallpaperScalingLayout(
-        m_scaling_mode,
-        source_extent.width,
-        source_extent.height,
-        logical_width,
-        logical_height,
-        scale_factor,
-        m_scaling_factor);
+    m_scaling_layout = ComputeWallpaperScalingLayout(m_scaling_mode,
+                                                     source_extent.width,
+                                                     source_extent.height,
+                                                     logical_width,
+                                                     logical_height,
+                                                     scale_factor,
+                                                     m_scaling_factor);
 }
 
 void VulkanRender::Impl::UpdateCameraFillMode(wallpaper::Scene&   scene,
@@ -695,7 +811,9 @@ void VulkanRender::Impl::clearLastRenderGraph() {
 
 void VulkanRender::Impl::compileRenderGraph(Scene& scene, rg::RenderGraph& rg) {
     if (! m_inited) return;
-    m_pass_loaded = false;
+    m_pass_loaded                     = false;
+    m_rendering_resources.frame_stats = &m_pending_frame_stats;
+    m_device->tex_cache().SetFrameStats(&m_pending_frame_stats);
 
     auto nodes             = rg.topologicalOrder();
     auto node_release_texs = rg.getLastReadTexs(nodes);
@@ -750,4 +868,5 @@ void VulkanRender::Impl::compileRenderGraph(Scene& scene, rg::RenderGraph& rg) {
         VVK_CHECK_VOID_RE(m_device->handle().WaitIdle());
     }
     m_pass_loaded = true;
+    m_device->tex_cache().SetFrameStats(nullptr);
 };

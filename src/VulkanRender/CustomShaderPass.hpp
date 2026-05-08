@@ -8,6 +8,7 @@
 #include "Vulkan/StagingBuffer.hpp"
 #include "Vulkan/GraphicsPipeline.hpp"
 #include "Vulkan/Shader.hpp"
+#include "VulkanRender/PassBatch.hpp"
 #include "SpriteAnimation.hpp"
 #include "Interface/IShaderValueUpdater.h"
 
@@ -56,13 +57,13 @@ public:
 
         // uniforms
         std::optional<ShaderReflected::Block> uniform_block;
-        std::function<void()> update_op;
+        std::function<void()>                 update_op;
     };
 
     CustomShaderPass(const Desc&);
     virtual ~CustomShaderPass();
 
-    void setDescTex(u32 index, std::string_view tex_key);
+    void        setDescTex(u32 index, std::string_view tex_key);
     Desc&       desc() { return m_desc; }
     const Desc& desc() const { return m_desc; }
 
@@ -70,7 +71,15 @@ public:
     void execute(const Device&, RenderingResources&) override;
     void destory(const Device&, RenderingResources&) override;
 
+    CustomPassBatchCandidate preRecord(const Device&, RenderingResources&);
+    CustomPassRenderInfo     renderInfo() const;
+    void                     recordDraw(const Device&, RenderingResources&);
+    void                     recordClear(const Device&, RenderingResources&);
+
 private:
+    void recordTextureBarriers(RenderingResources&) const;
+    void recordDescriptors(RenderingResources&) const;
+
     Desc m_desc;
 };
 

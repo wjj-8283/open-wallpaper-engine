@@ -33,7 +33,7 @@ CustomShaderPass::CustomShaderPass(const Desc& desc) {
     m_desc.output          = desc.output;
     m_desc.camera_override = desc.camera_override;
     m_desc.sprites_map     = desc.sprites_map;
-    m_desc.video_textures = desc.video_textures;
+    m_desc.video_textures  = desc.video_textures;
 };
 CustomShaderPass::~CustomShaderPass() {}
 
@@ -112,10 +112,9 @@ static void UpdateUniform(StagingBuffer* buf, const StagingBufferRef& bufref,
         const size_t element_size = value_u8.size() / uni->second.array_count;
         if (element_size > 0 && element_size <= uni->second.array_stride) {
             for (size_t index = 0; index < uni->second.array_count; ++index) {
-                buf->writeToBuf(
-                    bufref,
-                    value_u8.subspan(index * element_size, element_size),
-                    offset + index * uni->second.array_stride);
+                buf->writeToBuf(bufref,
+                                value_u8.subspan(index * element_size, element_size),
+                                offset + index * uni->second.array_stride);
             }
             return;
         }
@@ -137,7 +136,7 @@ void CustomShaderPass::prepare(Scene& scene, const Device& device, RenderingReso
         ImageSlotsRef img_slots;
         if (IsSpecTex(tex_name)) {
             tex_name = scene.ResolveRenderTargetName(tex_name);
-            if (!scene.HasRenderTarget(tex_name)) continue;
+            if (! scene.HasRenderTarget(tex_name)) continue;
             auto& rt  = *scene.FindRenderTarget(tex_name);
             auto  opt = device.tex_cache().Query(tex_name, ToTexKey(rt), ! rt.allowReuse);
             if (! opt.has_value()) continue;
@@ -146,7 +145,7 @@ void CustomShaderPass::prepare(Scene& scene, const Device& device, RenderingReso
             auto image = scene.imageParser->Parse(tex_name);
             if (image) {
                 m_desc.video_textures[i] = image->header.isVideo;
-                img_slots = device.tex_cache().CreateTex(*image);
+                img_slots                = device.tex_cache().CreateTex(*image);
             } else {
                 LOG_ERROR("parse tex \"%s\" failed", tex_name.c_str());
             }
@@ -155,12 +154,12 @@ void CustomShaderPass::prepare(Scene& scene, const Device& device, RenderingReso
     }
     {
         auto& tex_name = m_desc.output;
-        if (!IsSpecTex(tex_name)) {
+        if (! IsSpecTex(tex_name)) {
             LOG_ERROR("custom shader output is not a spec texture: %s", tex_name.c_str());
             return;
         }
         tex_name = scene.ResolveRenderTargetName(tex_name);
-        if (!scene.HasRenderTarget(tex_name)) {
+        if (! scene.HasRenderTarget(tex_name)) {
             LOG_ERROR("custom shader output render target is not registered: %s", tex_name.c_str());
             return;
         }
@@ -280,12 +279,11 @@ void CustomShaderPass::prepare(Scene& scene, const Device& device, RenderingReso
 
             auto blendmode = mesh.Material()->blenmode;
             SetBlend(blendmode, color_blend);
-            m_desc.blending = color_blend.blendEnable;
+            m_desc.blending          = color_blend.blendEnable;
             m_desc.alpha_to_coverage = blendmode == BlendMode::AlphaToCoverage;
 
-            loadOp = ResolveAttachmentLoadOp(
-                m_desc.preserve_target_contents,
-                m_desc.clear_on_first_use);
+            loadOp =
+                ResolveAttachmentLoadOp(m_desc.preserve_target_contents, m_desc.clear_on_first_use);
         }
         auto opt = CreateRenderPass(device.handle(),
                                     VK_FORMAT_R8G8B8A8_UNORM,
@@ -323,13 +321,14 @@ void CustomShaderPass::prepare(Scene& scene, const Device& device, RenderingReso
             .layers          = 1,
         };
         VVK_CHECK_VOID_RE(device.handle().CreateFramebuffer(info, m_desc.fb));
+        if (rr.frame_stats != nullptr) ++rr.frame_stats->framebuffer_creations;
     }
 
     m_desc.uniform_block.reset();
     const ShaderReflected::Block* uniform_block = nullptr;
     if (! ref.blocks.empty()) {
         m_desc.uniform_block = ref.blocks.front();
-        uniform_block = &m_desc.uniform_block.value();
+        uniform_block        = &m_desc.uniform_block.value();
         rr.dyn_buf->allocateSubRef(
             uniform_block->size, m_desc.ubo_buf, device.limits().minUniformBufferOffsetAlignment);
     }
@@ -354,7 +353,7 @@ void CustomShaderPass::prepare(Scene& scene, const Device& device, RenderingReso
                     auto& indice = mesh.GetIndexArray(0);
                     u32   count  = (u32)((indice.RenderDataCount() * 2) / 3);
                     draw_count   = count * 3;
-                    auto& buf = index_buf;
+                    auto& buf    = index_buf;
                     if (! dyn_buf->writeToBuf(buf,
                                               { (uint8_t*)indice.Data(), indice.DataSizeOf() }))
                         return;
@@ -366,15 +365,15 @@ void CustomShaderPass::prepare(Scene& scene, const Device& device, RenderingReso
     auto* buf    = rr.dyn_buf;
     auto* bufref = &m_desc.ubo_buf;
 
-    auto* node           = m_desc.node;
-    auto* scene_ptr      = &scene;
-    auto* device_ptr     = &device;
-    auto* shader_updater = scene.shaderValueUpdater.get();
-    auto& sprites        = m_desc.sprites_map;
-    auto& textures       = m_desc.textures;
-    auto& video_textures = m_desc.video_textures;
-    auto& vk_textures    = m_desc.vk_textures;
-    auto camera_override = m_desc.camera_override;
+    auto* node            = m_desc.node;
+    auto* scene_ptr       = &scene;
+    auto* device_ptr      = &device;
+    auto* shader_updater  = scene.shaderValueUpdater.get();
+    auto& sprites         = m_desc.sprites_map;
+    auto& textures        = m_desc.textures;
+    auto& video_textures  = m_desc.video_textures;
+    auto& vk_textures     = m_desc.vk_textures;
+    auto  camera_override = m_desc.camera_override;
 
     m_desc.update_op = [shader_updater,
                         uniform_block,
@@ -391,12 +390,13 @@ void CustomShaderPass::prepare(Scene& scene, const Device& device, RenderingReso
                         update_dyn_buf_op]() {
         auto update_unf_op = [uniform_block, buf, bufref](std::string_view       name,
                                                           wallpaper::ShaderValue value) {
-            if (uniform_block == nullptr || buf == nullptr || bufref == nullptr || !(*bufref)) return;
+            if (uniform_block == nullptr || buf == nullptr || bufref == nullptr || ! (*bufref))
+                return;
             UpdateUniform(buf, *bufref, *uniform_block, name, value);
         };
         std::string original_camera;
-        bool restore_camera = false;
-        if (!camera_override.empty() && node != nullptr && node->Camera() != camera_override) {
+        bool        restore_camera = false;
+        if (! camera_override.empty() && node != nullptr && node->Camera() != camera_override) {
             original_camera = node->Camera();
             node->SetCamera(camera_override);
             restore_camera = true;
@@ -419,18 +419,18 @@ void CustomShaderPass::prepare(Scene& scene, const Device& device, RenderingReso
             }
         }
         for (usize i = 0; i < video_textures.size(); ++i) {
-            if (!video_textures[i]) continue;
+            if (! video_textures[i]) continue;
             if (i >= textures.size() || i >= vk_textures.size()) continue;
 
-            std::string error;
+            std::string                          error;
             wallpaper::video::VideoPlaybackState playback_state =
-                scene_ptr->runtime != nullptr
-                ? scene_ptr->runtime->ResolveVideoPlaybackState(textures[i], scene_ptr->elapsingTime)
-                : wallpaper::video::VideoPlaybackState {};
+                scene_ptr->runtime != nullptr ? scene_ptr->runtime->ResolveVideoPlaybackState(
+                                                    textures[i], scene_ptr->elapsingTime)
+                                              : wallpaper::video::VideoPlaybackState {};
             if (scene_ptr->runtime == nullptr) {
                 playback_state.scene_elapsed_seconds = scene_ptr->elapsingTime;
             }
-            if (!device_ptr->tex_cache().UpdateVideoFrame(
+            if (! device_ptr->tex_cache().UpdateVideoFrame(
                     textures[i], playback_state, &vk_textures[i], &error)) {
                 LOG_ERROR("failed to update video texture \"%s\": %s",
                           textures[i].c_str(),
@@ -438,8 +438,7 @@ void CustomShaderPass::prepare(Scene& scene, const Device& device, RenderingReso
             } else {
                 if (scene_ptr->runtime != nullptr) {
                     scene_ptr->runtime->SetVideoTextureDuration(
-                        textures[i],
-                        device_ptr->tex_cache().GetVideoDuration(textures[i]));
+                        textures[i], device_ptr->tex_cache().GetVideoDuration(textures[i]));
                 }
             }
         }
@@ -469,9 +468,8 @@ void CustomShaderPass::prepare(Scene& scene, const Device& device, RenderingReso
     m_desc.update_op();
 
     {
-        m_desc.clear_value = ResolveAttachmentClearValue(
-            m_desc.output == SpecTex_Default,
-            scene.clearColor);
+        m_desc.clear_value =
+            ResolveAttachmentClearValue(m_desc.output == SpecTex_Default, scene.clearColor);
     }
     for (auto& tex : releaseTexs()) {
         device.tex_cache().MarkShareReady(tex);
@@ -479,64 +477,61 @@ void CustomShaderPass::prepare(Scene& scene, const Device& device, RenderingReso
     setPrepared();
 }
 
-void CustomShaderPass::execute(const Device&, RenderingResources& rr) {
-    const bool visible = m_desc.visibility_node == nullptr ||
-                         m_desc.visibility_node->EffectiveVisible();
-    if (!visible && !m_desc.clear_on_first_use) {
-        return;
-    }
+CustomPassRenderInfo CustomShaderPass::renderInfo() const {
+    return CustomPassRenderInfo {
+        .image        = m_desc.vk_output.handle,
+        .view         = m_desc.vk_output.view,
+        .extent       = m_desc.vk_output.extent,
+        .final_layout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+        .load_op =
+            ResolveAttachmentLoadOp(m_desc.preserve_target_contents, m_desc.clear_on_first_use),
+        .render_pass = *m_desc.pipeline.pass,
+        .framebuffer = *m_desc.fb,
+        .clear_value = m_desc.clear_value,
+    };
+}
 
-    if (!visible) {
-        auto&                   cmd    = rr.command;
-        auto&                   outext = m_desc.vk_output.extent;
-        VkRenderPassBeginInfo pass_begin_info {
-            .sType       = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO,
-            .pNext       = nullptr,
-            .renderPass  = *m_desc.pipeline.pass,
-            .framebuffer = *m_desc.fb,
-            .renderArea =
-                VkRect2D {
-                    .offset = { 0, 0 },
-                    .extent = { outext.width, outext.height },
-                },
-            .clearValueCount = 1,
-            .pClearValues    = &m_desc.clear_value,
-        };
-        cmd.BeginRenderPass(pass_begin_info, VK_SUBPASS_CONTENTS_INLINE);
-        cmd.EndRenderPass();
-        return;
+CustomPassBatchCandidate CustomShaderPass::preRecord(const Device&, RenderingResources& rr) {
+    const bool visible =
+        m_desc.visibility_node == nullptr || m_desc.visibility_node->EffectiveVisible();
+    CustomPassBatchCandidate candidate {
+        .batchable  = true,
+        .visible    = visible,
+        .clear_only = ! visible && m_desc.clear_on_first_use,
+        .render     = renderInfo(),
+    };
+
+    if (! visible) {
+        if (rr.frame_stats != nullptr) {
+            if (candidate.clear_only) {
+                ++rr.frame_stats->clear_only_pass_count;
+            } else {
+                ++rr.frame_stats->skipped_noop_pass_count;
+            }
+        }
+        return candidate;
     }
 
     if (m_desc.update_op) m_desc.update_op();
+    recordTextureBarriers(rr);
+    return candidate;
+}
 
-    auto&                   cmd    = rr.command;
-    auto&                   outext = m_desc.vk_output.extent;
+void CustomShaderPass::recordTextureBarriers(RenderingResources& rr) const {
+    auto&                   cmd = rr.command;
     VkImageSubresourceRange base_srang {
         .aspectMask     = VK_IMAGE_ASPECT_COLOR_BIT,
         .baseMipLevel   = 0,
-        .levelCount     = VK_REMAINING_ARRAY_LAYERS,
+        .levelCount     = VK_REMAINING_MIP_LEVELS,
         .baseArrayLayer = 0,
-        .layerCount     = VK_REMAINING_MIP_LEVELS,
+        .layerCount     = VK_REMAINING_ARRAY_LAYERS,
     };
     for (usize i = 0; i < m_desc.vk_textures.size(); i++) {
         auto& slot    = m_desc.vk_textures[i];
         int   binding = m_desc.vk_tex_binding[i];
         if (binding < 0) continue;
         if (slot.slots.empty()) continue;
-        auto&                 img = slot.getActive();
-        VkDescriptorImageInfo desc_img { img.sampler,
-                                         img.view,
-                                         img.layout };
-        VkWriteDescriptorSet  wset {
-             .sType           = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
-             .pNext           = nullptr,
-             .dstSet          = {},
-             .dstBinding      = (uint32_t)binding,
-             .descriptorCount = 1,
-             .descriptorType  = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-             .pImageInfo      = &desc_img,
-        };
-        cmd.PushDescriptorSetKHR(VK_PIPELINE_BIND_POINT_GRAPHICS, *m_desc.pipeline.layout, 0, wset);
+        auto& img = slot.getActive();
 
         VkImageMemoryBarrier imb {
             .sType            = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
@@ -553,6 +548,28 @@ void CustomShaderPass::execute(const Device&, RenderingResources& rr) {
                             VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
                             VK_DEPENDENCY_BY_REGION_BIT,
                             imb);
+    }
+}
+
+void CustomShaderPass::recordDescriptors(RenderingResources& rr) const {
+    auto& cmd = rr.command;
+    for (usize i = 0; i < m_desc.vk_textures.size(); i++) {
+        auto& slot    = m_desc.vk_textures[i];
+        int   binding = m_desc.vk_tex_binding[i];
+        if (binding < 0) continue;
+        if (slot.slots.empty()) continue;
+        auto&                 img = slot.getActive();
+        VkDescriptorImageInfo desc_img { img.sampler, img.view, img.layout };
+        VkWriteDescriptorSet  wset {
+             .sType           = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+             .pNext           = nullptr,
+             .dstSet          = {},
+             .dstBinding      = (uint32_t)binding,
+             .descriptorCount = 1,
+             .descriptorType  = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+             .pImageInfo      = &desc_img,
+        };
+        cmd.PushDescriptorSetKHR(VK_PIPELINE_BIND_POINT_GRAPHICS, *m_desc.pipeline.layout, 0, wset);
     }
 
     if (m_desc.ubo_buf) {
@@ -572,22 +589,12 @@ void CustomShaderPass::execute(const Device&, RenderingResources& rr) {
         };
         cmd.PushDescriptorSetKHR(VK_PIPELINE_BIND_POINT_GRAPHICS, *m_desc.pipeline.layout, 0, wset);
     }
+}
 
-    VkRenderPassBeginInfo pass_begin_info {
-        .sType       = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO,
-        .pNext       = nullptr,
-        .renderPass  = *m_desc.pipeline.pass,
-        .framebuffer = *m_desc.fb,
-        .renderArea =
-            VkRect2D {
-                .offset = { 0, 0 },
-                .extent = { outext.width, outext.height },
-            },
-        .clearValueCount = 1,
-        .pClearValues    = &m_desc.clear_value,
-    };
-    cmd.BeginRenderPass(pass_begin_info, VK_SUBPASS_CONTENTS_INLINE);
-
+void CustomShaderPass::recordDraw(const Device&, RenderingResources& rr) {
+    recordDescriptors(rr);
+    auto& cmd    = rr.command;
+    auto& outext = m_desc.vk_output.extent;
     cmd.BindPipeline(VK_PIPELINE_BIND_POINT_GRAPHICS, *m_desc.pipeline.handle);
     VkViewport viewport {
         .x        = 0,
@@ -615,7 +622,80 @@ void CustomShaderPass::execute(const Device&, RenderingResources& rr) {
         cmd.Draw(m_desc.draw_count, 1, 0, 0);
     }
 
-    cmd.EndRenderPass();
+    if (rr.frame_stats != nullptr) ++rr.frame_stats->custom_draw_count;
+}
+
+void CustomShaderPass::recordClear(const Device&, RenderingResources& rr) {
+    auto&                   cmd = rr.command;
+    VkImageSubresourceRange base_srang {
+        .aspectMask     = VK_IMAGE_ASPECT_COLOR_BIT,
+        .baseMipLevel   = 0,
+        .levelCount     = VK_REMAINING_MIP_LEVELS,
+        .baseArrayLayer = 0,
+        .layerCount     = VK_REMAINING_ARRAY_LAYERS,
+    };
+    VkImageMemoryBarrier in_bar {
+        .sType            = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
+        .pNext            = nullptr,
+        .srcAccessMask    = VK_ACCESS_MEMORY_READ_BIT,
+        .dstAccessMask    = VK_ACCESS_TRANSFER_WRITE_BIT,
+        .oldLayout        = VK_IMAGE_LAYOUT_UNDEFINED,
+        .newLayout        = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+        .image            = m_desc.vk_output.handle,
+        .subresourceRange = base_srang,
+    };
+    cmd.PipelineBarrier(VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+                        VK_PIPELINE_STAGE_TRANSFER_BIT,
+                        VK_DEPENDENCY_BY_REGION_BIT,
+                        in_bar);
+    cmd.ClearColorImage(m_desc.vk_output.handle,
+                        VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                        &m_desc.clear_value.color,
+                        base_srang);
+    VkImageMemoryBarrier out_bar {
+        .sType            = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
+        .pNext            = nullptr,
+        .srcAccessMask    = VK_ACCESS_TRANSFER_WRITE_BIT,
+        .dstAccessMask    = VK_ACCESS_MEMORY_READ_BIT,
+        .oldLayout        = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+        .newLayout        = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+        .image            = m_desc.vk_output.handle,
+        .subresourceRange = base_srang,
+    };
+    cmd.PipelineBarrier(VK_PIPELINE_STAGE_TRANSFER_BIT,
+                        VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+                        VK_DEPENDENCY_BY_REGION_BIT,
+                        out_bar);
+}
+
+void CustomShaderPass::execute(const Device& device, RenderingResources& rr) {
+    const auto candidate = preRecord(device, rr);
+    if (! candidate.visible) {
+        if (candidate.clear_only) {
+            recordClear(device, rr);
+        }
+        return;
+    }
+
+    const auto            info = renderInfo();
+    VkRenderPassBeginInfo pass_begin_info {
+        .sType       = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO,
+        .pNext       = nullptr,
+        .renderPass  = info.render_pass,
+        .framebuffer = info.framebuffer,
+        .renderArea =
+            VkRect2D {
+                .offset = { 0, 0 },
+                .extent = { info.extent.width, info.extent.height },
+            },
+        .clearValueCount = 1,
+        .pClearValues    = &info.clear_value,
+    };
+    rr.command.BeginRenderPass(pass_begin_info, VK_SUBPASS_CONTENTS_INLINE);
+    if (rr.frame_stats != nullptr) ++rr.frame_stats->render_pass_begin_count;
+    recordDraw(device, rr);
+    rr.command.EndRenderPass();
+    if (rr.frame_stats != nullptr) ++rr.frame_stats->render_pass_end_count;
 }
 
 void CustomShaderPass::destory(const Device&, RenderingResources& rr) {

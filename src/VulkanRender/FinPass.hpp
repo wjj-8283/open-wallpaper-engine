@@ -9,6 +9,8 @@
 #include "Scene/Scene.h"
 #include "SpecTexs.hpp"
 
+#include <vector>
+
 namespace wallpaper
 {
 namespace vulkan
@@ -30,7 +32,6 @@ public:
         VkClearValue    clear_value;
 
         StagingBufferRef   vertex_buf;
-        vvk::Framebuffer   fb;
         PipelineParameters pipeline;
     };
 
@@ -47,7 +48,18 @@ public:
     void destory(const Device&, RenderingResources&) override;
 
 private:
-    Desc m_desc;
+    struct CachedFramebuffer {
+        VkImageView      view {};
+        VkRenderPass     render_pass {};
+        uint32_t         width { 0 };
+        uint32_t         height { 0 };
+        vvk::Framebuffer framebuffer;
+    };
+
+    vvk::Framebuffer* framebufferForPresent(const Device&, RenderingResources&);
+
+    Desc                           m_desc;
+    std::vector<CachedFramebuffer> m_framebuffers;
 };
 
 } // namespace vulkan

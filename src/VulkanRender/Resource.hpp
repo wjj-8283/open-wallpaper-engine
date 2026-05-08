@@ -1,6 +1,7 @@
 #pragma once
 #include "Core/NoCopyMove.hpp"
 #include "Vulkan/StagingBuffer.hpp"
+#include "Vulkan/RenderFrameStats.hpp"
 #include <memory>
 
 namespace wallpaper
@@ -10,6 +11,7 @@ namespace vulkan
 
 struct RenderingResources {
     vvk::CommandBuffer command;
+    RenderFrameStats*  frame_stats { nullptr };
 
     vvk::Semaphore sem_swap_wait_image;
     vvk::Semaphore sem_swap_finish;

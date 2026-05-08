@@ -42,6 +42,7 @@ ExImageParameters::ExImageParameters(ExImageParameters&& o) noexcept
       handle(std::move(o.handle)),
       view(std::move(o.view)),
       sampler(std::move(o.sampler)),
+      external_sampler(std::exchange(o.external_sampler, VK_NULL_HANDLE)),
       extent(o.extent),
       layout(o.layout),
       mipmap_level(o.mipmap_level),
@@ -51,19 +52,20 @@ ExImageParameters::ExImageParameters(ExImageParameters&& o) noexcept
       plane0_offset(o.plane0_offset),
       plane0_stride(o.plane0_stride) {}
 ExImageParameters& ExImageParameters::operator=(ExImageParameters&& o) noexcept {
-    mem           = std::move(o.mem);
-    mem_reqs      = o.mem_reqs;
-    handle        = std::move(o.handle);
-    view          = std::move(o.view);
-    sampler       = std::move(o.sampler);
-    extent        = o.extent;
-    layout        = o.layout;
-    mipmap_level  = o.mipmap_level;
-    fd            = std::exchange(o.fd, 0);
-    drm_fourcc    = o.drm_fourcc;
-    drm_modifier  = o.drm_modifier;
-    plane0_offset = o.plane0_offset;
-    plane0_stride = o.plane0_stride;
+    mem              = std::move(o.mem);
+    mem_reqs         = o.mem_reqs;
+    handle           = std::move(o.handle);
+    view             = std::move(o.view);
+    sampler          = std::move(o.sampler);
+    external_sampler = std::exchange(o.external_sampler, VK_NULL_HANDLE);
+    extent           = o.extent;
+    layout           = o.layout;
+    mipmap_level     = o.mipmap_level;
+    fd               = std::exchange(o.fd, 0);
+    drm_fourcc       = o.drm_fourcc;
+    drm_modifier     = o.drm_modifier;
+    plane0_offset    = o.plane0_offset;
+    plane0_stride    = o.plane0_stride;
     return *this;
 }
 

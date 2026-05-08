@@ -94,7 +94,7 @@ void FinPass::setPresentQueueIndex(uint32_t i) { m_desc.present_queue_index = i;
 void FinPass::prepare(Scene& scene, const Device& device, RenderingResources& rr) {
     {
         auto tex_name = scene.ResolveRenderTargetName(std::string(m_desc.result));
-        if (!scene.HasRenderTarget(tex_name)) return;
+        if (! scene.HasRenderTarget(tex_name)) return;
         auto& rt = *scene.FindRenderTarget(tex_name);
         if (auto opt = device.tex_cache().Query(tex_name, ToTexKey(rt), ! rt.allowReuse);
             opt.has_value()) {
@@ -181,6 +181,43 @@ void FinPass::prepare(Scene& scene, const Device& device, RenderingResources& rr
     setPrepared();
 }
 
+vvk::Framebuffer* FinPass::framebufferForPresent(const Device& device, RenderingResources& rr) {
+    const VkImageView  view   = m_desc.vk_present.view;
+    const VkRenderPass pass   = *m_desc.pipeline.pass;
+    const uint32_t     width  = m_desc.vk_present.extent.width;
+    const uint32_t     height = m_desc.vk_present.extent.height;
+
+    for (auto& cached : m_framebuffers) {
+        if (cached.view == view && cached.render_pass == pass && cached.width == width &&
+            cached.height == height) {
+            return &cached.framebuffer;
+        }
+    }
+
+    CachedFramebuffer cached {
+        .view        = view,
+        .render_pass = pass,
+        .width       = width,
+        .height      = height,
+    };
+    VkFramebufferCreateInfo info {
+        .sType           = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO,
+        .pNext           = nullptr,
+        .renderPass      = pass,
+        .attachmentCount = 1,
+        .pAttachments    = &m_desc.vk_present.view,
+        .width           = width,
+        .height          = height,
+        .layers          = 1,
+    };
+    if (device.handle().CreateFramebuffer(info, cached.framebuffer) != VK_SUCCESS) {
+        return nullptr;
+    }
+    if (rr.frame_stats != nullptr) ++rr.frame_stats->framebuffer_creations;
+    m_framebuffers.push_back(std::move(cached));
+    return &m_framebuffers.back().framebuffer;
+}
+
 void FinPass::execute(const Device& device, RenderingResources& rr) {
     auto& cmd    = rr.command;
     auto& outext = m_desc.vk_present.extent;
@@ -193,20 +230,8 @@ void FinPass::execute(const Device& device, RenderingResources& rr) {
         .layerCount     = VK_REMAINING_MIP_LEVELS,
 
     };
-    {
-        m_desc.fb = {};
-        VkFramebufferCreateInfo info {
-            .sType           = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO,
-            .pNext           = nullptr,
-            .renderPass      = *m_desc.pipeline.pass,
-            .attachmentCount = 1,
-            .pAttachments    = &m_desc.vk_present.view,
-            .width           = m_desc.vk_present.extent.width,
-            .height          = m_desc.vk_present.extent.height,
-            .layers          = 1,
-        };
-        (void)device.handle().CreateFramebuffer(info, m_desc.fb);
-    }
+    auto* framebuffer = framebufferForPresent(device, rr);
+    if (framebuffer == nullptr) return;
     {
         VkDescriptorImageInfo desc_img {
             .sampler     = m_desc.vk_result.sampler,
@@ -249,7 +274,7 @@ void FinPass::execute(const Device& device, RenderingResources& rr) {
         .sType       = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO,
         .pNext       = nullptr,
         .renderPass  = *m_desc.pipeline.pass,
-        .framebuffer = *m_desc.fb,
+        .framebuffer = **framebuffer,
         .renderArea =
             VkRect2D {
                 .offset = { 0, 0 },
@@ -259,6 +284,7 @@ void FinPass::execute(const Device& device, RenderingResources& rr) {
         .pClearValues    = &m_desc.clear_value,
     };
     cmd.BeginRenderPass(pass_begin_info, VK_SUBPASS_CONTENTS_INLINE);
+    if (rr.frame_stats != nullptr) ++rr.frame_stats->render_pass_begin_count;
 
     cmd.BindPipeline(VK_PIPELINE_BIND_POINT_GRAPHICS, *m_desc.pipeline.handle);
     VkViewport fallback_viewport {
@@ -269,15 +295,14 @@ void FinPass::execute(const Device& device, RenderingResources& rr) {
         .minDepth = 0.0f,
         .maxDepth = 1.0f,
     };
-    VkRect2D fallback_scissor { { 0, 0 }, { outext.width, outext.height } };
-    VkViewport viewport =
-        rr.wallpaper_viewport.width > 0.0f && rr.wallpaper_viewport.height != 0.0f
-            ? rr.wallpaper_viewport
-            : fallback_viewport;
-    VkRect2D scissor =
+    VkRect2D   fallback_scissor { { 0, 0 }, { outext.width, outext.height } };
+    VkViewport viewport = rr.wallpaper_viewport.width > 0.0f && rr.wallpaper_viewport.height != 0.0f
+                              ? rr.wallpaper_viewport
+                              : fallback_viewport;
+    VkRect2D   scissor =
         rr.wallpaper_scissor.extent.width > 0 && rr.wallpaper_scissor.extent.height > 0
-            ? rr.wallpaper_scissor
-            : fallback_scissor;
+              ? rr.wallpaper_scissor
+              : fallback_scissor;
     cmd.SetViewport(0, viewport);
     cmd.SetScissor(0, scissor);
 
@@ -285,6 +310,7 @@ void FinPass::execute(const Device& device, RenderingResources& rr) {
         0, 1, std::array { rr.vertex_buf->gpuBuf() }.data(), &m_desc.vertex_buf.offset);
     cmd.Draw(4, 1, 0, 0);
     cmd.EndRenderPass();
+    if (rr.frame_stats != nullptr) ++rr.frame_stats->render_pass_end_count;
 
     // do queue family transfer operation
     if (m_desc.present_queue_index != device.graphics_queue().family_index) {
@@ -310,5 +336,6 @@ void FinPass::execute(const Device& device, RenderingResources& rr) {
 void FinPass::destory(const Device&, RenderingResources& rr) {
     setPrepared(false);
     clearReleaseTexs();
+    m_framebuffers.clear();
     rr.vertex_buf->unallocateSubRef(m_desc.vertex_buf);
 }

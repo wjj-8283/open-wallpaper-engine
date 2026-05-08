@@ -100,6 +100,11 @@ gtest_discover_tests(
     PROPERTIES TIMEOUT 30
     DISCOVERY_TIMEOUT 60
 )
+add_executable(vulkan_render_batch_planner_smoke vulkan_render_batch_planner_smoke.cpp)
+target_link_libraries(vulkan_render_batch_planner_smoke PRIVATE wpVulkanRender)
+target_include_directories(vulkan_render_batch_planner_smoke PRIVATE .)
+target_compile_features(vulkan_render_batch_planner_smoke PRIVATE cxx_std_20)
+add_test(NAME vulkan_render_batch_planner_smoke COMMAND vulkan_render_batch_planner_smoke)
 #gtest_discover_tests(
 #    version_tests
 #    PROPERTIES TIMEOUT 30

@@ -3,6 +3,7 @@
 #include "Swapchain.hpp"
 #include "TextureCache.hpp"
 #include "Device.hpp"
+#include "RenderFrameStats.hpp"
 #include "Util.hpp"
 
 #include "Image.hpp"
@@ -90,9 +91,9 @@ bool SetError(std::string* error, std::string message) {
 }
 
 void* ExportMetalDeviceHandle(const Device& device, std::string* error) {
-    auto export_metal_objects =
-        reinterpret_cast<PFN_vkExportMetalObjectsEXT>(
-            device.handle().Dispatch().vkGetDeviceProcAddr(*device.handle(), "vkExportMetalObjectsEXT"));
+    auto export_metal_objects = reinterpret_cast<PFN_vkExportMetalObjectsEXT>(
+        device.handle().Dispatch().vkGetDeviceProcAddr(*device.handle(),
+                                                       "vkExportMetalObjectsEXT"));
     if (export_metal_objects == nullptr) {
         SetError(error, "vkExportMetalObjectsEXT is not available on this Vulkan device");
         return nullptr;
@@ -212,12 +213,10 @@ std::optional<vvk::DeviceMemory> AllocateMemory(const vvk::Device& device, vvk::
     return std::nullopt;
 }
 
-std::optional<ExImageParameters> CreateImportedMetalTextureImage(const Device&        device,
-                                                                 void*                metal_texture,
-                                                                 TextureSample        sample,
-                                                                 uint32_t             width,
-                                                                 uint32_t             height,
-                                                                 std::string*         error) {
+std::optional<ExImageParameters>
+CreateImportedMetalTextureImage(const Device& device, void* metal_texture, TextureSample sample,
+                                VkSampler sampler, uint32_t width, uint32_t height,
+                                std::string* error) {
     if (metal_texture == nullptr) {
         SetError(error, "cannot import a null Metal texture");
         return std::nullopt;
@@ -288,11 +287,16 @@ std::optional<ExImageParameters> CreateImportedMetalTextureImage(const Device&  
         .sample       = sample,
         .mipmap_level = 1,
     };
-    if (const VkResult result = device.handle().CreateSampler(GenSamplerInfo(tex_key), image.sampler);
-        result != VK_SUCCESS) {
-        VVK_CHECK(result);
-        SetError(error, "failed to create Vulkan sampler for imported video frame");
-        return std::nullopt;
+    if (sampler != VK_NULL_HANDLE) {
+        image.external_sampler = sampler;
+    } else {
+        if (const VkResult result =
+                device.handle().CreateSampler(GenSamplerInfo(tex_key), image.sampler);
+            result != VK_SUCCESS) {
+            VVK_CHECK(result);
+            SetError(error, "failed to create Vulkan sampler for imported video frame");
+            return std::nullopt;
+        }
     }
 
     return image;
@@ -307,7 +311,7 @@ static uint32_t VkFormatToDrmFourcc(VkFormat fmt) {
     switch (fmt) {
     case VK_FORMAT_R8G8B8A8_UNORM: return 0x34324241u; // DRM_FORMAT_ABGR8888
     case VK_FORMAT_B8G8R8A8_UNORM: return 0x34324152u; // DRM_FORMAT_ARGB8888
-    default:                      return 0u;
+    default: return 0u;
     }
 }
 
@@ -325,9 +329,8 @@ std::optional<ExImageParameters> CreateExImage(uint32_t width, uint32_t height, 
         // a queried list; we keep LINEAR-only for now so that consumers
         // can mmap the buffer directly (the iteration 4 milestone).
         if (tiling != VK_IMAGE_TILING_LINEAR) {
-            LOG_INFO(
-                "[ex-image] OPTIMAL tiling requested; downgrading to LINEAR "
-                "because the DRM-format-modifier path is not yet wired up");
+            LOG_INFO("[ex-image] OPTIMAL tiling requested; downgrading to LINEAR "
+                     "because the DRM-format-modifier path is not yet wired up");
             tiling = VK_IMAGE_TILING_LINEAR;
         }
 
@@ -342,17 +345,17 @@ std::optional<ExImageParameters> CreateExImage(uint32_t width, uint32_t height, 
             .handleTypes = VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT,
         };
         VkImageCreateInfo info {
-            .sType       = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
-            .pNext       = &ex_info,
-            .imageType   = VK_IMAGE_TYPE_2D,
-            .format      = format,
-            .extent      = VkExtent3D { .width = width, .height = height, .depth = 1 },
-            .mipLevels   = 1,
-            .arrayLayers = 1,
-            .samples     = VK_SAMPLE_COUNT_1_BIT,
-            .tiling      = tiling,
-            .usage       = usage,
-            .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
+            .sType                 = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
+            .pNext                 = &ex_info,
+            .imageType             = VK_IMAGE_TYPE_2D,
+            .format                = format,
+            .extent                = VkExtent3D { .width = width, .height = height, .depth = 1 },
+            .mipLevels             = 1,
+            .arrayLayers           = 1,
+            .samples               = VK_SAMPLE_COUNT_1_BIT,
+            .tiling                = tiling,
+            .usage                 = usage,
+            .sharingMode           = VK_SHARING_MODE_EXCLUSIVE,
             .queueFamilyIndexCount = 0,
             .initialLayout         = VK_IMAGE_LAYOUT_UNDEFINED,
         };
@@ -400,12 +403,11 @@ std::optional<ExImageParameters> CreateExImage(uint32_t width, uint32_t height, 
             .mipLevel   = 0,
             .arrayLayer = 0,
         };
-        VkSubresourceLayout layout =
-            device.GetImageSubresourceLayout(*image.handle, subres);
-        image.plane0_offset = layout.offset;
-        image.plane0_stride = static_cast<uint32_t>(layout.rowPitch);
-        image.drm_modifier  = 0; // DRM_FORMAT_MOD_LINEAR
-        image.drm_fourcc    = VkFormatToDrmFourcc(format);
+        VkSubresourceLayout layout = device.GetImageSubresourceLayout(*image.handle, subres);
+        image.plane0_offset        = layout.offset;
+        image.plane0_stride        = static_cast<uint32_t>(layout.rowPitch);
+        image.drm_modifier         = 0; // DRM_FORMAT_MOD_LINEAR
+        image.drm_fourcc           = VkFormatToDrmFourcc(format);
 
         return image;
 
@@ -550,13 +552,9 @@ inline VkResult CopyImageData(std::span<const BufferParameters> in_bufs,
 }
 } // namespace
 
-bool TextureCache::ReadbackImageSample(const ImageParameters&    image,
-                                       uint32_t                  x,
-                                       uint32_t                  y,
-                                       uint32_t                  width,
-                                       uint32_t                  height,
-                                       std::vector<std::uint8_t>* out,
-                                       std::string*              error) {
+bool TextureCache::ReadbackImageSample(const ImageParameters& image, uint32_t x, uint32_t y,
+                                       uint32_t width, uint32_t height,
+                                       std::vector<std::uint8_t>* out, std::string* error) {
     if (out == nullptr) {
         return SetError(error, "readback output buffer must not be null");
     }
@@ -570,7 +568,7 @@ bool TextureCache::ReadbackImageSample(const ImageParameters&    image,
         return SetError(error, "readback sample origin is outside the image extent");
     }
 
-    const uint32_t sample_width = std::min(width, image.extent.width - x);
+    const uint32_t sample_width  = std::min(width, image.extent.width - x);
     const uint32_t sample_height = std::min(height, image.extent.height - y);
     const size_t   byte_count =
         static_cast<size_t>(sample_width) * static_cast<size_t>(sample_height) * 4u;
@@ -579,13 +577,13 @@ bool TextureCache::ReadbackImageSample(const ImageParameters&    image,
     }
 
     VmaBufferParameters readback_buffer;
-    if (!CreateReadbackBuffer(m_device.vma_allocator(), byte_count, readback_buffer)) {
+    if (! CreateReadbackBuffer(m_device.vma_allocator(), byte_count, readback_buffer)) {
         return SetError(error, "failed to allocate a Vulkan readback buffer");
     }
 
-    if (!m_tex_cmd) allocateCmd();
+    if (! m_tex_cmd) allocateCmd();
 
-    const VkImageLayout original_layout = image.layout;
+    const VkImageLayout           original_layout = image.layout;
     const VkImageSubresourceRange subresource_range {
         .aspectMask     = VK_IMAGE_ASPECT_COLOR_BIT,
         .baseMipLevel   = 0,
@@ -594,28 +592,28 @@ bool TextureCache::ReadbackImageSample(const ImageParameters&    image,
         .layerCount     = 1,
     };
     const VkImageMemoryBarrier to_transfer_src {
-        .sType            = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
-        .pNext            = nullptr,
-        .srcAccessMask    = VK_ACCESS_MEMORY_READ_BIT,
-        .dstAccessMask    = VK_ACCESS_TRANSFER_READ_BIT,
-        .oldLayout        = original_layout,
-        .newLayout        = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+        .sType               = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
+        .pNext               = nullptr,
+        .srcAccessMask       = VK_ACCESS_MEMORY_READ_BIT,
+        .dstAccessMask       = VK_ACCESS_TRANSFER_READ_BIT,
+        .oldLayout           = original_layout,
+        .newLayout           = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
         .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
         .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-        .image            = image.handle,
-        .subresourceRange = subresource_range,
+        .image               = image.handle,
+        .subresourceRange    = subresource_range,
     };
     const VkImageMemoryBarrier restore_layout {
-        .sType            = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
-        .pNext            = nullptr,
-        .srcAccessMask    = VK_ACCESS_TRANSFER_READ_BIT,
-        .dstAccessMask    = VK_ACCESS_MEMORY_READ_BIT,
-        .oldLayout        = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
-        .newLayout        = original_layout,
+        .sType               = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
+        .pNext               = nullptr,
+        .srcAccessMask       = VK_ACCESS_TRANSFER_READ_BIT,
+        .dstAccessMask       = VK_ACCESS_MEMORY_READ_BIT,
+        .oldLayout           = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+        .newLayout           = original_layout,
         .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
         .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-        .image            = image.handle,
-        .subresourceRange = subresource_range,
+        .image               = image.handle,
+        .subresourceRange    = subresource_range,
     };
     const VkBufferImageCopy copy_region {
         .bufferOffset      = 0,
@@ -631,7 +629,7 @@ bool TextureCache::ReadbackImageSample(const ImageParameters&    image,
         .imageOffset = VkOffset3D { static_cast<int32_t>(x), static_cast<int32_t>(y), 0 },
         .imageExtent = VkExtent3D { sample_width, sample_height, 1 },
     };
-    std::array copy_regions { copy_region };
+    std::array                  copy_regions { copy_region };
     const VkBufferMemoryBarrier host_barrier {
         .sType               = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER,
         .pNext               = nullptr,
@@ -655,25 +653,13 @@ bool TextureCache::ReadbackImageSample(const ImageParameters&    image,
     }
 
     m_tex_cmd.PipelineBarrier(
-        VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
-        VK_PIPELINE_STAGE_TRANSFER_BIT,
-        0,
-        to_transfer_src);
+        VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, to_transfer_src);
     m_tex_cmd.CopyImageToBuffer(
-        image.handle,
-        VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
-        *readback_buffer.handle,
-        copy_regions);
+        image.handle, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, *readback_buffer.handle, copy_regions);
     m_tex_cmd.PipelineBarrier(
-        VK_PIPELINE_STAGE_TRANSFER_BIT,
-        VK_PIPELINE_STAGE_HOST_BIT,
-        0,
-        host_barrier);
+        VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_HOST_BIT, 0, host_barrier);
     m_tex_cmd.PipelineBarrier(
-        VK_PIPELINE_STAGE_TRANSFER_BIT,
-        VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
-        0,
-        restore_layout);
+        VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, 0, restore_layout);
 
     result = m_tex_cmd.End();
     if (result != VK_SUCCESS) {
@@ -701,7 +687,7 @@ bool TextureCache::ReadbackImageSample(const ImageParameters&    image,
     }
 
     void* mapped_bytes = nullptr;
-    result = readback_buffer.handle.MapMemory(&mapped_bytes);
+    result             = readback_buffer.handle.MapMemory(&mapped_bytes);
     if (result != VK_SUCCESS || mapped_bytes == nullptr) {
         if (result != VK_SUCCESS) VVK_CHECK(result);
         return SetError(error, "failed to map Vulkan readback buffer");
@@ -724,6 +710,7 @@ std::size_t TextureKey::HashValue(const TextureKey& k) {
     utils::hash_combine(seed, (int)k.sample.wrapS);
     utils::hash_combine(seed, (int)k.sample.wrapT);
     utils::hash_combine(seed, (int)k.sample.magFilter);
+    utils::hash_combine(seed, (int)k.sample.minFilter);
     return seed;
 }
 
@@ -742,6 +729,7 @@ std::optional<ExImageParameters> TextureCache::CreateExTex(uint32_t width, uint3
                              m_device.gpu());
     if (opt.has_value()) {
         const auto& eximg = opt.value();
+        if (m_frame_stats != nullptr) ++m_frame_stats->texture_creations;
 
         if (! m_tex_cmd) allocateCmd();
         TransImgLayout(m_device.graphics_queue().handle, m_tex_cmd, eximg, VK_IMAGE_LAYOUT_GENERAL);
@@ -754,8 +742,9 @@ ImageSlotsRef TextureCache::CreateTex(Image& image) {
     if (image.header.isVideo) {
         if (exists(m_video_tex_map, image.key)) {
             ImageSlotsRef ref;
-            if (auto* current = m_video_tex_map.at(image.key)->current_frame.get(); current != nullptr) {
-                ref.slots = { ImageParameters(current->image) };
+            if (auto* current = m_video_tex_map.at(image.key)->current_frame.get();
+                current != nullptr) {
+                ref.slots  = { ImageParameters(current->image) };
                 ref.active = 0;
             }
             return ref;
@@ -763,26 +752,26 @@ ImageSlotsRef TextureCache::CreateTex(Image& image) {
 
         std::string error;
         auto        source = video::CreateVideoTextureSource(image, &error);
-        if (!source) {
+        if (! source) {
             LOG_ERROR("failed to create FFmpeg video texture source for \"%s\": %s",
                       image.key.c_str(),
                       error.c_str());
             return {};
         }
-        if (!source->prime(&error)) {
+        if (! source->prime(&error)) {
             LOG_ERROR("failed to prime FFmpeg video texture source for \"%s\": %s",
                       image.key.c_str(),
                       error.c_str());
             return {};
         }
 
-        auto video_tex   = std::make_unique<VideoTex>();
-        video_tex->sample = image.header.sample;
-        video_tex->source = std::move(source);
+        auto video_tex             = std::make_unique<VideoTex>();
+        video_tex->sample          = image.header.sample;
+        video_tex->source          = std::move(source);
         m_video_tex_map[image.key] = std::move(video_tex);
 
         ImageSlotsRef ref;
-        if (!UpdateVideoFrame(image.key, video::VideoPlaybackState {}, &ref, &error)) {
+        if (! UpdateVideoFrame(image.key, video::VideoPlaybackState {}, &ref, &error)) {
             LOG_ERROR("failed to import initial video frame for \"%s\": %s",
                       image.key.c_str(),
                       error.c_str());
@@ -840,6 +829,7 @@ ImageSlotsRef TextureCache::CreateTex(Image& image) {
                                    VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT);
             opt.has_value()) {
             image_paras = std::move(opt.value());
+            if (m_frame_stats != nullptr) ++m_frame_stats->texture_creations;
         } else
             break;
 
@@ -888,7 +878,7 @@ void TextureCache::allocateVideoImportCmd() {
 }
 
 bool TextureCache::waitForPendingVideoImport(std::string* error) {
-    if (!m_video_import_pending) return true;
+    if (! m_video_import_pending) return true;
 
     const auto wait_started = std::chrono::steady_clock::now();
     if (const VkResult result = m_video_import_fence.Wait(); result != VK_SUCCESS) {
@@ -896,7 +886,8 @@ bool TextureCache::waitForPendingVideoImport(std::string* error) {
         return SetError(error, "failed waiting for pending video frame import");
     }
     const double wait_ms =
-        std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - wait_started).count();
+        std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - wait_started)
+            .count();
     if (const VkResult result = m_video_import_fence.Reset(); result != VK_SUCCESS) {
         VVK_CHECK(result);
         return SetError(error, "failed resetting video frame import fence");
@@ -907,6 +898,37 @@ bool TextureCache::waitForPendingVideoImport(std::string* error) {
     }
     m_video_import_pending = false;
     return true;
+}
+
+VkSampler TextureCache::GetOrCreateSampler(TextureKey tex_key, std::string* error) {
+    const TexHash hash = TextureKey::HashValue(tex_key);
+    for (auto& entry : m_sampler_cache) {
+        if (entry.hash == hash && entry.sampler) return *entry.sampler;
+    }
+
+    CachedSampler entry {};
+    entry.hash = hash;
+    if (const VkResult result =
+            m_device.handle().CreateSampler(GenSamplerInfo(tex_key), entry.sampler);
+        result != VK_SUCCESS) {
+        VVK_CHECK(result);
+        SetError(error, "failed to create cached Vulkan sampler");
+        return VK_NULL_HANDLE;
+    }
+    const VkSampler sampler = *entry.sampler;
+    m_sampler_cache.push_back(std::move(entry));
+    return sampler;
+}
+
+void* TextureCache::GetMetalDeviceHandle(std::string* error) {
+    if (m_metal_device != nullptr) return m_metal_device;
+    if (m_metal_device_queried) {
+        SetError(error, "cached Metal device handle is not available");
+        return nullptr;
+    }
+    m_metal_device         = ExportMetalDeviceHandle(m_device, error);
+    m_metal_device_queried = true;
+    return m_metal_device;
 }
 
 std::optional<VmaImageParameters> TextureCache::CreateTex(TextureKey tex_key) {
@@ -926,6 +948,7 @@ std::optional<VmaImageParameters> TextureCache::CreateTex(TextureKey tex_key) {
                                 VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT);
             opt.has_value()) {
             image_paras = std::move(opt.value());
+            if (m_frame_stats != nullptr) ++m_frame_stats->texture_creations;
         } else
             break;
 
@@ -945,18 +968,16 @@ TextureCache::TextureCache(const Device& device): m_device(device) {}
 
 TextureCache::~TextureCache() {};
 
-void TextureCache::SetVideoPlaybackPaused(bool paused) {
-    m_video_playback_state.paused = paused;
-}
+void TextureCache::SetFrameStats(RenderFrameStats* stats) { m_frame_stats = stats; }
 
-void TextureCache::SetVideoPlaybackRate(float rate) {
-    m_video_playback_state.rate = rate;
-}
+void TextureCache::SetVideoPlaybackPaused(bool paused) { m_video_playback_state.paused = paused; }
 
-double TextureCache::GetVideoDuration(std::string_view key) const
-{
+void TextureCache::SetVideoPlaybackRate(float rate) { m_video_playback_state.rate = rate; }
+
+double TextureCache::GetVideoDuration(std::string_view key) const {
     const auto iterator = m_video_tex_map.find(std::string(key));
-    if (iterator == m_video_tex_map.end() || iterator->second == nullptr || !iterator->second->source) {
+    if (iterator == m_video_tex_map.end() || iterator->second == nullptr ||
+        ! iterator->second->source) {
         return 0.0;
     }
     return iterator->second->source->durationSeconds();
@@ -964,7 +985,7 @@ double TextureCache::GetVideoDuration(std::string_view key) const
 
 void TextureCache::Clear() {
     std::string error;
-    if (!waitForPendingVideoImport(&error) && !error.empty()) {
+    if (! waitForPendingVideoImport(&error) && ! error.empty()) {
         LOG_ERROR("failed waiting for pending video import before cache clear: %s", error.c_str());
     }
     m_tex_map.clear();
@@ -973,75 +994,92 @@ void TextureCache::Clear() {
     m_query_map.clear();
 }
 
-bool TextureCache::UpdateVideoFrame(std::string_view key,
+bool TextureCache::UpdateVideoFrame(std::string_view                 key,
                                     const video::VideoPlaybackState& playback_state,
-                                    ImageSlotsRef*   out,
-                                    std::string*     error) {
+                                    ImageSlotsRef* out, std::string* error) {
     const auto update_started = std::chrono::steady_clock::now();
-    if (!exists(m_video_tex_map, key)) {
+    if (! exists(m_video_tex_map, key)) {
         return SetError(error, std::string("video texture not registered: ") + std::string(key));
     }
 
     auto& video_tex = *m_video_tex_map.at(std::string(key));
-    if (!video_tex.source) {
+    if (! video_tex.source) {
         return SetError(error, std::string("video texture source missing: ") + std::string(key));
     }
 
     video::VideoPlaybackState effective_state = playback_state;
     effective_state.paused = m_video_playback_state.paused || playback_state.paused;
-    effective_state.rate = std::max(0.0f, m_video_playback_state.rate) *
-                           std::max(0.0f, playback_state.rate);
+    effective_state.rate =
+        std::max(0.0f, m_video_playback_state.rate) * std::max(0.0f, playback_state.rate);
     effective_state.scene_elapsed_seconds = playback_state.scene_elapsed_seconds;
 
-    if (!video_tex.source->syncPlayback(effective_state, error)) {
+    if (! video_tex.source->syncPlayback(effective_state, error)) {
         return false;
     }
-    if (!video_tex.source->refreshFrame(error)) {
+    if (! video_tex.source->refreshFrame(error)) {
         return false;
     }
 
     const auto frame = video_tex.source->currentFrame();
-    if (!frame.valid()) {
-        return SetError(error, std::string("video frame is not ready for texture: ") + std::string(key));
+    if (! frame.valid()) {
+        return SetError(error,
+                        std::string("video frame is not ready for texture: ") + std::string(key));
     }
 
-    if (video_tex.current_frame == nullptr || video_tex.current_frame->generation != frame.generation) {
-        void* metal_device = ExportMetalDeviceHandle(m_device, error);
+    void* surface_identity = frame.io_surface != nullptr ? frame.io_surface : frame.pixel_buffer;
+    if (video_tex.current_frame == nullptr ||
+        video_tex.current_frame->generation != frame.generation ||
+        video_tex.current_frame->surface_identity != surface_identity) {
+        void* metal_device = GetMetalDeviceHandle(error);
         if (metal_device == nullptr) {
             return false;
         }
         void* metal_texture =
-            video::CreateAppleVideoMetalTextureForDevice(
-                frame, metal_device, error);
+            video::CreateAppleVideoMetalTextureForDevice(frame, metal_device, error);
         if (metal_texture == nullptr) {
             return false;
         }
 
-        auto imported_image = CreateImportedMetalTextureImage(m_device,
-                                                              metal_texture,
-                                                              video_tex.sample,
-                                                              frame.width,
-                                                              frame.height,
-                                                              error);
-        if (!imported_image.has_value()) {
+        TextureKey sampler_key {
+            .width        = static_cast<i32>(frame.width),
+            .height       = static_cast<i32>(frame.height),
+            .usage        = TexUsage::COLOR,
+            .format       = TextureFormat::RGBA8,
+            .sample       = video_tex.sample,
+            .mipmap_level = 1,
+        };
+        const VkSampler sampler = GetOrCreateSampler(sampler_key, error);
+        if (sampler == VK_NULL_HANDLE) {
             video::ReleaseAppleVideoMetalTexture(metal_texture);
             return false;
         }
-        if (!m_video_import_cmd) allocateVideoImportCmd();
-        if (!m_video_import_fence) {
+
+        auto imported_image = CreateImportedMetalTextureImage(
+            m_device, metal_texture, video_tex.sample, sampler, frame.width, frame.height, error);
+        if (! imported_image.has_value()) {
+            video::ReleaseAppleVideoMetalTexture(metal_texture);
+            return false;
+        }
+        if (m_frame_stats != nullptr) {
+            ++m_frame_stats->texture_creations;
+            ++m_frame_stats->video_imports;
+        }
+        if (! m_video_import_cmd) allocateVideoImportCmd();
+        if (! m_video_import_fence) {
             VkFenceCreateInfo fence_info {
                 .sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO,
                 .pNext = nullptr,
                 .flags = 0,
             };
-            if (const VkResult result = m_device.handle().CreateFence(fence_info, m_video_import_fence);
+            if (const VkResult result =
+                    m_device.handle().CreateFence(fence_info, m_video_import_fence);
                 result != VK_SUCCESS) {
                 VVK_CHECK(result);
                 video::ReleaseAppleVideoMetalTexture(metal_texture);
                 return SetError(error, "failed to create Vulkan fence for video frame import");
             }
         }
-        if (!waitForPendingVideoImport(error)) {
+        if (! waitForPendingVideoImport(error)) {
             video::ReleaseAppleVideoMetalTexture(metal_texture);
             return false;
         }
@@ -1057,30 +1095,30 @@ bool TextureCache::UpdateVideoFrame(std::string_view key,
         }
         m_video_import_pending = true;
 
-        auto imported_frame = std::make_unique<ImportedVideoFrame>();
-        imported_frame->image = std::move(imported_image.value());
-        imported_frame->metal_texture =
-            std::shared_ptr<void>(metal_texture, [](void* handle) {
-                video::ReleaseAppleVideoMetalTexture(handle);
-            });
-        imported_frame->generation = frame.generation;
-        video_tex.current_frame = std::move(imported_frame);
+        auto imported_frame              = std::make_unique<ImportedVideoFrame>();
+        imported_frame->image            = std::move(imported_image.value());
+        imported_frame->metal_texture    = std::shared_ptr<void>(metal_texture, [](void* handle) {
+            video::ReleaseAppleVideoMetalTexture(handle);
+        });
+        imported_frame->generation       = frame.generation;
+        imported_frame->surface_identity = surface_identity;
+        video_tex.current_frame          = std::move(imported_frame);
     }
 
     if (out != nullptr && video_tex.current_frame != nullptr) {
-        out->slots = { ImageParameters(video_tex.current_frame->image) };
+        out->slots  = { ImageParameters(video_tex.current_frame->image) };
         out->active = 0;
     }
 
     const double update_ms =
-        std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - update_started).count();
+        std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - update_started)
+            .count();
     if (update_ms >= 25.0) {
-        LOG_INFO(
-            "video texture \"%s\" UpdateVideoFrame took %.3fms (generation=%llu)",
-            std::string(key).c_str(),
-            update_ms,
-            static_cast<unsigned long long>(
-                video_tex.current_frame != nullptr ? video_tex.current_frame->generation : 0));
+        LOG_INFO("video texture \"%s\" UpdateVideoFrame took %.3fms (generation=%llu)",
+                 std::string(key).c_str(),
+                 update_ms,
+                 static_cast<unsigned long long>(
+                     video_tex.current_frame != nullptr ? video_tex.current_frame->generation : 0));
     }
     return true;
 }
