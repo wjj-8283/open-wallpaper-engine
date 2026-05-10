@@ -178,6 +178,8 @@ void Instance::setSurface(VkSurfaceKHR sf) {
     m_surface = vvk::SurfaceKHR(sf, *m_vinst, m_vinst.Dispatch());
 }
 
+void Instance::releaseSurface() { m_surface.reset(); }
+
 bool Instance::supportExt(std::string_view name) const { return exists(m_extensions, name); }
 bool Instance::supportLayer(std::string_view name) const { return exists(m_layers, name); }
 

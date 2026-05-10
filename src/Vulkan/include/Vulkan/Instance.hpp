@@ -50,6 +50,7 @@ public:
 
     bool offscreen() const;
     void setSurface(VkSurfaceKHR);
+    void releaseSurface();
     bool supportExt(std::string_view) const;
     bool supportLayer(std::string_view) const;
 

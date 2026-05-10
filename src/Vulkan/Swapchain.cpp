@@ -89,6 +89,12 @@ std::optional<vvk::ImageView> CreateSwapImageView(const vvk::Device& device, VkF
 }
 } // namespace
 
+void Swapchain::Destroy() {
+    m_imageviews.clear();
+    m_images.clear();
+    m_handle.reset();
+}
+
 const vvk::SwapchainKHR& Swapchain::handle() const { return m_handle; }
 VkFormat                 Swapchain::format() const { return m_format.format; };
 VkExtent2D               Swapchain::extent() const { return m_extent; };

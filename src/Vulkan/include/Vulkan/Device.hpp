@@ -21,6 +21,7 @@ public:
     static bool CheckGPU(vvk::PhysicalDevice gpu, std::span<const Extension> exts, VkSurfaceKHR surface);
 
     void Destroy();
+    void releaseSwapchain();
 
     const auto& graphics_queue() const { return m_graphics_queue; }
     const auto& present_queue() const { return m_present_queue; }

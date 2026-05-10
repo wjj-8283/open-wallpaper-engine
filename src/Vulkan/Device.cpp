@@ -172,6 +172,8 @@ VkDeviceSize Device::GetUsage() const {
 
 void Device::Destroy() { VVK_CHECK(m_device.WaitIdle()); }
 
+void Device::releaseSwapchain() { m_swapchain.Destroy(); }
+
 Device::Device(): m_tex_cache(std::make_unique<TextureCache>(*this)) {}
 Device::~Device() {};
 

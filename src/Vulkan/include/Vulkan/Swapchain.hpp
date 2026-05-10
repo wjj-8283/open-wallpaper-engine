@@ -13,6 +13,7 @@ class Device;
 class Swapchain {
 public:
     static bool                      Create(Device&, VkSurfaceKHR, VkExtent2D, Swapchain&);
+    void                             Destroy();
     const vvk::SwapchainKHR&         handle() const;
     VkFormat                         format() const;
     VkExtent2D                       extent() const;
