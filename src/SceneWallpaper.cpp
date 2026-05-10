@@ -41,6 +41,7 @@
 #include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <future>
 #include <limits>
 #include <optional>
 #include <vector>
@@ -436,6 +437,8 @@ public:
         CMD_SET_SPEED,
         CMD_STOP,
         CMD_DRAW,
+        CMD_BEGIN_SURFACE_RECONFIGURE,
+        CMD_FINISH_SURFACE_RECONFIGURE,
         CMD_NO
     };
     MainHandler& main_handler;
@@ -464,6 +467,8 @@ public:
                 CASE_CMD(SET_SCENE);
                 CASE_CMD(SET_SPEED);
                 CASE_CMD(INIT_VULKAN);
+                CASE_CMD(BEGIN_SURFACE_RECONFIGURE);
+                CASE_CMD(FINISH_SURFACE_RECONFIGURE);
             default: break;
             }
         }
@@ -665,6 +670,44 @@ private:
 
             // inited, callback to laod scene
             main_handler.sendCmdLoadScene();
+        }
+    }
+    MHANDLER_CMD(BEGIN_SURFACE_RECONFIGURE) {
+        std::shared_ptr<std::promise<bool>> promise;
+        if (!msg->findObject("promise", &promise)) {
+            return;
+        }
+        try {
+            frame_timer.Stop();
+            if (renderInited()) {
+                m_render->SetVideoPlaybackPaused(true);
+                m_render->releaseSurface();
+            }
+            promise->set_value(true);
+        } catch (...) {
+            promise->set_value(false);
+        }
+    }
+    MHANDLER_CMD(FINISH_SURFACE_RECONFIGURE) {
+        std::shared_ptr<std::promise<bool>> promise;
+        std::shared_ptr<RenderInitInfo> info;
+        if (!msg->findObject("promise", &promise)) {
+            return;
+        }
+        if (!msg->findObject("info", &info)) {
+            promise->set_value(false);
+            return;
+        }
+        try {
+            bool ok = m_render->resetSurface(*info);
+            if (ok) {
+                rebuildRenderGraph();
+                m_render->SetVideoPlaybackPaused(false);
+                frame_timer.Run();
+            }
+            promise->set_value(ok);
+        } catch (...) {
+            promise->set_value(false);
         }
     }
 
