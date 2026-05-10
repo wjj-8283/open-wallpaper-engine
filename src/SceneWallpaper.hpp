@@ -55,6 +55,19 @@ public:
     void initVulkan(const RenderInitInfo&);
     void applyConfig(const SceneWallpaperConfig&);
 
+    /// Pauses rendering and releases the Vulkan surface + swapchain on the
+    /// render thread. Blocks until the render thread confirms completion.
+    /// The scene, shaders, render graph, audio, and runtime state remain
+    /// loaded. Returns false on any internal failure.
+    bool beginSurfaceReconfigure();
+
+    /// Rebuilds the Vulkan surface + swapchain on the render thread from a
+    /// new RenderInitInfo and resumes rendering. Blocks until the render
+    /// thread confirms completion.
+    /// Preconditions: `beginSurfaceReconfigure` has returned true since the
+    /// last successful init/finish. Returns false on failure.
+    bool finishSurfaceReconfigure(const RenderInitInfo& info);
+
     void play();
     void pause();
     void setPaused(bool paused);

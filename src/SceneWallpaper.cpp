@@ -757,6 +757,34 @@ void SceneWallpaper::initVulkan(const RenderInitInfo& info) {
     msg->post();
 }
 
+bool SceneWallpaper::beginSurfaceReconfigure() {
+    if (m_main_handler == nullptr || m_main_handler->renderHandler() == nullptr) {
+        return false;
+    }
+    auto promise = std::make_shared<std::promise<bool>>();
+    auto future  = promise->get_future();
+    auto msg     = CreateMsgWithCmd(m_main_handler->renderHandler(),
+                                RenderHandler::CMD::CMD_BEGIN_SURFACE_RECONFIGURE);
+    msg->setObject("promise", promise);
+    msg->post();
+    return future.get();
+}
+
+bool SceneWallpaper::finishSurfaceReconfigure(const RenderInitInfo& info) {
+    if (m_main_handler == nullptr || m_main_handler->renderHandler() == nullptr) {
+        return false;
+    }
+    auto promise = std::make_shared<std::promise<bool>>();
+    auto future  = promise->get_future();
+    auto sp_info = std::make_shared<RenderInitInfo>(info);
+    auto msg     = CreateMsgWithCmd(m_main_handler->renderHandler(),
+                                RenderHandler::CMD::CMD_FINISH_SURFACE_RECONFIGURE);
+    msg->setObject("promise", promise);
+    msg->setObject("info", sp_info);
+    msg->post();
+    return future.get();
+}
+
 void SceneWallpaper::applyConfig(const SceneWallpaperConfig& config) {
     setSceneSource(config.source);
     setAssetsPath(config.assets);
