@@ -115,8 +115,14 @@ bool Swapchain::Create(Device& device, VkSurfaceKHR surface, VkExtent2D extent, 
     uint32_t image_count = surfaceCapabilities.minImageCount + 1;
     if (surfaceCapabilities.maxImageCount > 0 && image_count > surfaceCapabilities.maxImageCount)
         image_count = surfaceCapabilities.maxImageCount;
-    surfaceCapabilities.currentExtent = swap.m_extent;
-    
+
+    // NOTE: do not override surface_capabilities.currentExtent here.
+    // GetSwapChainExtent below uses the platform-reported currentExtent when
+    // valid (on macOS this is CAMetalLayer.drawableSize) and falls back to the
+    // caller's requested `extent` otherwise. A previous version of this code
+    // assigned `swap.m_extent` into currentExtent; on a swapchain recreate
+    // that held the OLD size, which then clobbered the new surface dimensions
+    // and the swapchain came up at the previous display's size.
     swap.m_extent = GetSwapChainExtent(surfaceCapabilities, extent);
 
     swap.m_present_mode                          = VK_PRESENT_MODE_FIFO_KHR;
