@@ -275,6 +275,15 @@ extern "C" int owe_scene_wallpaper_set_target_fps(owe_scene_wallpaper* scene, ui
     return 0;
 }
 
+extern "C" int owe_scene_wallpaper_set_paused(owe_scene_wallpaper* scene, bool paused)
+{
+    clear_last_error();
+    if (!valid_scene(scene)) return finish_with_error("scene must not be null");
+
+    scene->scene.setPaused(paused);
+    return 0;
+}
+
 extern "C" int owe_scene_wallpaper_set_property_bool(
     owe_scene_wallpaper* scene,
     const char* name,

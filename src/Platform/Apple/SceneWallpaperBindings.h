@@ -75,6 +75,9 @@ int owe_scene_wallpaper_apply_config(owe_scene_wallpaper* scene, const char* sou
 /* Direct SceneWallpaper::setTargetFps forwarding. */
 int owe_scene_wallpaper_set_target_fps(owe_scene_wallpaper* scene, uint32_t fps);
 
+/* Direct SceneWallpaper::setPaused forwarding for live playback control. */
+int owe_scene_wallpaper_set_paused(owe_scene_wallpaper* scene, bool paused);
+
 /* Direct property forwarding to SceneWallpaper::setProperty*. */
 int owe_scene_wallpaper_set_property_bool(owe_scene_wallpaper* scene, const char* name, bool value);
 int owe_scene_wallpaper_set_property_int32(owe_scene_wallpaper* scene, const char* name,
