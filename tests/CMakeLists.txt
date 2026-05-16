@@ -63,6 +63,7 @@ endif()
 include(GoogleTest)
 add_executable(
     audio_tests
+    audio/audio_response_mono_test.cpp
     audio/sample_math_test.cpp
     audio/sound_layer_control_test.cpp)
 target_link_libraries(audio_tests PRIVATE ${PROJECT_NAME} wpAudio GTest::gtest_main)
