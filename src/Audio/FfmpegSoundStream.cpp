@@ -1,5 +1,6 @@
 #include "Audio/FfmpegSoundStream.hpp"
 
+#include "Fs/IBinaryStream.h"
 #include "Utils/Logging.h"
 
 extern "C" {
@@ -12,10 +13,13 @@ extern "C" {
 }
 
 #include <algorithm>
+#include <cerrno>
 #include <cstdint>
 #include <cstring>
 #include <filesystem>
+#include <memory>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace wallpaper::audio
@@ -36,17 +40,150 @@ bool SetError(std::string* error, std::string message)
     return false;
 }
 
-bool ProbeHasAudioStream(const std::filesystem::path& media_path, std::string* error)
+class FfmpegInputSource {
+public:
+    virtual ~FfmpegInputSource() = default;
+
+    virtual const std::string& Description() const = 0;
+    virtual bool Open(AVFormatContext** format_context, std::string* error) = 0;
+};
+
+class PathFfmpegInputSource final : public FfmpegInputSource {
+public:
+    explicit PathFfmpegInputSource(std::filesystem::path media_path)
+        : m_media_path(std::move(media_path))
+        , m_description(m_media_path.string())
+    {
+    }
+
+    const std::string& Description() const override { return m_description; }
+
+    bool Open(AVFormatContext** format_context, std::string* error) override
+    {
+        if (m_media_path.empty()) return SetError(error, "pure-video audio path must not be empty");
+
+        if (const int result = avformat_open_input(
+                format_context,
+                m_media_path.string().c_str(),
+                nullptr,
+                nullptr);
+            result < 0) {
+            return SetError(error, "failed to open FFmpeg audio input: " + AvErrorString(result));
+        }
+
+        return true;
+    }
+
+private:
+    std::filesystem::path m_media_path;
+    std::string           m_description;
+};
+
+class StreamFfmpegInputSource final : public FfmpegInputSource {
+public:
+    explicit StreamFfmpegInputSource(std::shared_ptr<fs::IBinaryStream> stream)
+        : m_stream(std::move(stream))
+    {
+    }
+
+    ~StreamFfmpegInputSource() override
+    {
+        FreeAvio();
+    }
+
+    const std::string& Description() const override { return m_description; }
+
+    bool Open(AVFormatContext** format_context, std::string* error) override
+    {
+        if (!m_stream->Rewind()) {
+            return SetError(error, "failed to rewind VFS audio stream");
+        }
+        FreeAvio();
+
+        auto* context = avformat_alloc_context();
+        if (context == nullptr) {
+            return SetError(error, "failed to allocate an FFmpeg media context");
+        }
+
+        constexpr int avio_buffer_size = 4096;
+        auto* buffer = static_cast<unsigned char*>(av_malloc(avio_buffer_size));
+        if (buffer == nullptr) {
+            avformat_free_context(context);
+            return SetError(error, "failed to allocate an FFmpeg AVIO buffer");
+        }
+
+        m_avio_context = avio_alloc_context(
+            buffer,
+            avio_buffer_size,
+            0,
+            this,
+            &StreamFfmpegInputSource::ReadPacket,
+            nullptr,
+            &StreamFfmpegInputSource::Seek);
+        if (m_avio_context == nullptr) {
+            av_free(buffer);
+            avformat_free_context(context);
+            return SetError(error, "failed to allocate an FFmpeg AVIO context");
+        }
+
+        context->pb = m_avio_context;
+        context->flags |= AVFMT_FLAG_CUSTOM_IO;
+
+        if (const int result = avformat_open_input(&context, nullptr, nullptr, nullptr); result < 0) {
+            FreeAvio();
+            return SetError(error, "failed to open FFmpeg audio input: " + AvErrorString(result));
+        }
+
+        *format_context = context;
+        return true;
+    }
+
+private:
+    static int ReadPacket(void* opaque, uint8_t* buffer, int buffer_size)
+    {
+        auto* source = static_cast<StreamFfmpegInputSource*>(opaque);
+        const auto bytes_read = source->m_stream->Read(
+            buffer,
+            static_cast<usize>(std::max(buffer_size, 0)));
+        if (bytes_read == 0) return AVERROR_EOF;
+        return static_cast<int>(bytes_read);
+    }
+
+    static int64_t Seek(void* opaque, int64_t offset, int whence)
+    {
+        auto* source = static_cast<StreamFfmpegInputSource*>(opaque);
+
+        if (whence == AVSEEK_SIZE) return source->m_stream->Size();
+
+        bool seek_result { false };
+        switch (whence & ~AVSEEK_FORCE) {
+        case SEEK_SET: seek_result = source->m_stream->SeekSet(static_cast<idx>(offset)); break;
+        case SEEK_CUR: seek_result = source->m_stream->SeekCur(static_cast<idx>(offset)); break;
+        case SEEK_END: seek_result = source->m_stream->SeekEnd(static_cast<idx>(offset)); break;
+        default: return AVERROR(EINVAL);
+        }
+
+        if (!seek_result) return AVERROR(EIO);
+        return source->m_stream->Tell();
+    }
+
+    void FreeAvio()
+    {
+        if (m_avio_context == nullptr) return;
+
+        av_freep(&m_avio_context->buffer);
+        avio_context_free(&m_avio_context);
+    }
+
+    std::shared_ptr<fs::IBinaryStream> m_stream;
+    AVIOContext*                       m_avio_context { nullptr };
+    std::string                        m_description { "VFS audio stream" };
+};
+
+bool ProbeHasAudioStream(FfmpegInputSource& input_source, std::string* error)
 {
     AVFormatContext* format_context = nullptr;
-    if (const int result = avformat_open_input(
-            &format_context,
-            media_path.string().c_str(),
-            nullptr,
-            nullptr);
-        result < 0) {
-        return SetError(error, "failed to open FFmpeg media input: " + AvErrorString(result));
-    }
+    if (!input_source.Open(&format_context, error)) return false;
 
     if (const int result = avformat_find_stream_info(format_context, nullptr); result < 0) {
         avformat_close_input(&format_context);
@@ -66,7 +203,17 @@ bool ProbeHasAudioStream(const std::filesystem::path& media_path, std::string* e
 class FfmpegSoundStream final : public SoundStream {
 public:
     explicit FfmpegSoundStream(std::filesystem::path media_path)
-        : m_media_path(std::move(media_path))
+        : FfmpegSoundStream(std::make_unique<PathFfmpegInputSource>(std::move(media_path)))
+    {
+    }
+
+    explicit FfmpegSoundStream(std::shared_ptr<fs::IBinaryStream> stream)
+        : FfmpegSoundStream(std::make_unique<StreamFfmpegInputSource>(std::move(stream)))
+    {
+    }
+
+    explicit FfmpegSoundStream(std::unique_ptr<FfmpegInputSource> input_source)
+        : m_input_source(std::move(input_source))
     {
     }
 
@@ -132,7 +279,7 @@ private:
         std::string error;
         if (!openDecoder(&error)) {
             LOG_ERROR("failed to open FFmpeg audio stream for \"%s\": %s",
-                      m_media_path.string().c_str(),
+                      m_input_source->Description().c_str(),
                       error.c_str());
             return false;
         }
@@ -142,16 +289,7 @@ private:
 
     bool openDecoder(std::string* error)
     {
-        if (m_media_path.empty()) return SetError(error, "pure-video audio path must not be empty");
-
-        if (const int result = avformat_open_input(
-                &m_format_context,
-                m_media_path.string().c_str(),
-                nullptr,
-                nullptr);
-            result < 0) {
-            return SetError(error, "failed to open FFmpeg audio input: " + AvErrorString(result));
-        }
+        if (!m_input_source->Open(&m_format_context, error)) return false;
 
         if (const int result = avformat_find_stream_info(m_format_context, nullptr); result < 0) {
             return SetError(error, "failed to read FFmpeg audio stream info: " + AvErrorString(result));
@@ -227,7 +365,7 @@ private:
                 AVSEEK_FLAG_BACKWARD);
             result < 0) {
             LOG_ERROR("failed to loop FFmpeg audio stream for \"%s\": %s",
-                      m_media_path.string().c_str(),
+                      m_input_source->Description().c_str(),
                       AvErrorString(result).c_str());
             return false;
         }
@@ -256,7 +394,7 @@ private:
             }
             if (read_result < 0) {
                 LOG_ERROR("failed to read FFmpeg audio packet for \"%s\": %s",
-                          m_media_path.string().c_str(),
+                          m_input_source->Description().c_str(),
                           AvErrorString(read_result).c_str());
                 return false;
             }
@@ -270,7 +408,7 @@ private:
             av_packet_unref(m_packet);
             if (send_result < 0 && send_result != AVERROR(EAGAIN)) {
                 LOG_ERROR("failed to submit FFmpeg audio packet for \"%s\": %s",
-                          m_media_path.string().c_str(),
+                          m_input_source->Description().c_str(),
                           AvErrorString(send_result).c_str());
                 return false;
             }
@@ -284,7 +422,7 @@ private:
                 }
                 if (receive_result < 0) {
                     LOG_ERROR("failed to receive an FFmpeg audio frame for \"%s\": %s",
-                              m_media_path.string().c_str(),
+                              m_input_source->Description().c_str(),
                               AvErrorString(receive_result).c_str());
                     return false;
                 }
@@ -310,7 +448,7 @@ private:
                 av_frame_unref(m_frame);
                 if (converted_samples < 0) {
                     LOG_ERROR("failed to resample an FFmpeg audio frame for \"%s\": %s",
-                              m_media_path.string().c_str(),
+                              m_input_source->Description().c_str(),
                               AvErrorString(converted_samples).c_str());
                     return false;
                 }
@@ -332,19 +470,19 @@ private:
     }
 
 private:
-    std::filesystem::path m_media_path;
-    Desc                  m_desc {};
-    bool                  m_open { false };
-    AVFormatContext*      m_format_context { nullptr };
-    AVCodecContext*       m_codec_context { nullptr };
-    AVStream*             m_audio_stream { nullptr };
-    int                   m_audio_stream_index { -1 };
-    SwrContext*           m_swr { nullptr };
-    AVPacket*             m_packet { nullptr };
-    AVFrame*              m_frame { nullptr };
-    AVChannelLayout       m_output_layout {};
-    std::vector<float>    m_pending_samples;
-    size_t                m_pending_offset_samples { 0 };
+    std::unique_ptr<FfmpegInputSource> m_input_source;
+    Desc                               m_desc {};
+    bool                               m_open { false };
+    AVFormatContext*                   m_format_context { nullptr };
+    AVCodecContext*                    m_codec_context { nullptr };
+    AVStream*                          m_audio_stream { nullptr };
+    int                                m_audio_stream_index { -1 };
+    SwrContext*                        m_swr { nullptr };
+    AVPacket*                          m_packet { nullptr };
+    AVFrame*                           m_frame { nullptr };
+    AVChannelLayout                    m_output_layout {};
+    std::vector<float>                 m_pending_samples;
+    size_t                             m_pending_offset_samples { 0 };
 };
 
 } // namespace
@@ -362,11 +500,28 @@ std::unique_ptr<SoundStream> CreateFfmpegSoundStream(const std::filesystem::path
             std::string("pure-video audio file does not exist: ") + media_path.string());
         return nullptr;
     }
-    if (!ProbeHasAudioStream(media_path, error)) {
+    PathFfmpegInputSource input_source(media_path);
+    if (!ProbeHasAudioStream(input_source, error)) {
         return nullptr;
     }
 
     return std::make_unique<FfmpegSoundStream>(media_path);
+}
+
+std::unique_ptr<SoundStream> CreateFfmpegSoundStream(std::shared_ptr<fs::IBinaryStream> stream,
+                                                     std::string* error)
+{
+    if (stream == nullptr) {
+        SetError(error, "VFS audio stream must not be null");
+        return nullptr;
+    }
+
+    auto input_source = std::make_unique<StreamFfmpegInputSource>(std::move(stream));
+    if (!ProbeHasAudioStream(*input_source, error)) {
+        return nullptr;
+    }
+
+    return std::make_unique<FfmpegSoundStream>(std::move(input_source));
 }
 
 } // namespace wallpaper::audio
