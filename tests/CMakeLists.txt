@@ -64,9 +64,10 @@ include(GoogleTest)
 add_executable(
     audio_tests
     audio/audio_response_mono_test.cpp
+    audio/ffmpeg_sound_stream_test.cpp
     audio/sample_math_test.cpp
     audio/sound_layer_control_test.cpp)
-target_link_libraries(audio_tests PRIVATE ${PROJECT_NAME} wpAudio GTest::gtest_main)
+target_link_libraries(audio_tests PRIVATE ${PROJECT_NAME} wpAudio wpFs GTest::gtest_main)
 target_include_directories(audio_tests PRIVATE .)
 target_compile_features(audio_tests PRIVATE cxx_std_20)
 gtest_discover_tests(
