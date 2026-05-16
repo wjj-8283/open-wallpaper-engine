@@ -24,6 +24,12 @@ struct AudioSpectrumSnapshot
     std::array<float, 16> average16 {};
 };
 
+bool SubmitMonoAudioFrames(
+    uint32_t sample_rate,
+    uint32_t frame_count,
+    const float* pcm_frames,
+    std::string* error);
+
 bool SubmitAudioFrames(
     uint32_t sample_rate,
     uint32_t frame_count,

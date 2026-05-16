@@ -7,8 +7,8 @@
 namespace wallpaper::audio
 {
 
-void AnalyzeAudioResponseBlock(
-    const float* interleaved_pcm,
+void AnalyzeAudioResponseMonoBlock(
+    const float* mono_pcm,
     uint32_t frame_count,
     AudioSpectrumSnapshot* snapshot);
 

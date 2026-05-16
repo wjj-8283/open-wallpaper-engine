@@ -434,6 +434,19 @@ extern "C" const char* owe_property_project_property_reset(void)
     return property_name(wallpaper::PROPERTY_PROJECT_PROPERTY_RESET);
 }
 
+extern "C" int owe_audio_submit_mono_frames(
+    uint32_t sample_rate,
+    uint32_t frame_count,
+    const float* pcm_frames)
+{
+    clear_last_error();
+    std::string error;
+    if (!wallpaper::audio::SubmitMonoAudioFrames(sample_rate, frame_count, pcm_frames, &error)) {
+        return finish_with_error(error);
+    }
+    return 0;
+}
+
 extern "C" int owe_audio_submit_frames(
     uint32_t sample_rate,
     uint32_t frame_count,

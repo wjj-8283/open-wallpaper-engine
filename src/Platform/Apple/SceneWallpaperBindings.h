@@ -120,6 +120,7 @@ const char* owe_property_project_property_override_json(void);
 const char* owe_property_project_property_reset(void);
 
 /* Audio-response sample submission shared by all renderer scenes. */
+int owe_audio_submit_mono_frames(uint32_t sample_rate, uint32_t frame_count, const float* pcm_frames);
 int owe_audio_submit_frames(uint32_t sample_rate, uint32_t frame_count, const float* pcm_frames);
 
 /* Thread-local error text for the last non-zero-returning call on this thread. */

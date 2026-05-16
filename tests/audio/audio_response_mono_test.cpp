@@ -56,7 +56,7 @@ TEST(AudioResponseMonoTest, MonoSubmitUpdatesSnapshotAt12Khz) {
     }
 
     auto snapshot = WaitForGeneration();
-    EXPECT_EQ(snapshot.sample_rate, 48'000u);
+    EXPECT_EQ(snapshot.sample_rate, 12'000u);
     EXPECT_EQ(snapshot.last_submit_sample_rate, kSubmitSampleRate);
     EXPECT_EQ(snapshot.accepted_frame_count, samples.size() * kChunkSubmitCount);
     EXPECT_GT(snapshot.generation, 0u);
@@ -116,11 +116,11 @@ TEST(AudioResponseMonoTest, StereoCompatibilityWrapperDownmixesToMono) {
     }
 
     auto mono_snapshot = WaitForGeneration();
-    EXPECT_EQ(stereo_snapshot.sample_rate, 48'000u);
+    EXPECT_EQ(stereo_snapshot.sample_rate, 12'000u);
     EXPECT_EQ(stereo_snapshot.last_submit_sample_rate, kSubmitSampleRate);
     EXPECT_EQ(stereo_snapshot.accepted_frame_count, kChunkFrameCount * kChunkSubmitCount);
     EXPECT_GT(stereo_snapshot.generation, 0u);
-    EXPECT_EQ(mono_snapshot.sample_rate, 48'000u);
+    EXPECT_EQ(mono_snapshot.sample_rate, 12'000u);
     EXPECT_EQ(mono_snapshot.last_submit_sample_rate, kSubmitSampleRate);
     EXPECT_EQ(mono_snapshot.accepted_frame_count, kChunkFrameCount * kChunkSubmitCount);
     EXPECT_GT(mono_snapshot.generation, 0u);

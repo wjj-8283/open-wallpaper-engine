@@ -15,11 +15,11 @@ namespace wallpaper::audio
 namespace
 {
 
-constexpr uint32_t kAnalysisSampleRate = 48000;
+constexpr uint32_t kAnalysisSampleRate = 12000;
 constexpr uint32_t kFftSize = 1024;
-constexpr uint32_t kHopSize = 1024;
+constexpr uint32_t kHopSize = 200;
 constexpr size_t kInterleavedChannels = 2u;
-constexpr size_t kMaxFifoSamples = static_cast<size_t>(kAnalysisSampleRate) * kInterleavedChannels * 2u;
+constexpr size_t kMaxFifoSamples = static_cast<size_t>(kAnalysisSampleRate) * 2u;
 
 struct AudioResponseState
 {
@@ -45,7 +45,7 @@ bool SetError(std::string* error, std::string message)
 void WorkerMain(std::stop_token stop_token)
 {
     while (!stop_token.stop_requested()) {
-        std::array<float, kFftSize * kInterleavedChannels> block {};
+        std::array<float, kFftSize> block {};
         AudioSpectrumSnapshot next_snapshot {};
         bool analyze_block { false };
         bool decay_snapshot { false };
@@ -63,7 +63,7 @@ void WorkerMain(std::stop_token stop_token)
 
             if (g_state.fifo.size() >= block.size()) {
                 std::copy_n(g_state.fifo.begin(), block.size(), block.begin());
-                g_state.fifo.erase(g_state.fifo.begin(), g_state.fifo.begin() + (kHopSize * kInterleavedChannels));
+                g_state.fifo.erase(g_state.fifo.begin(), g_state.fifo.begin() + kHopSize);
                 next_snapshot = g_state.snapshot;
                 analyze_block = true;
             } else if (g_state.snapshot.generation > 0 &&
@@ -76,7 +76,7 @@ void WorkerMain(std::stop_token stop_token)
         }
 
         if (analyze_block) {
-            AnalyzeAudioResponseBlock(block.data(), kFftSize, &next_snapshot);
+            AnalyzeAudioResponseMonoBlock(block.data(), kFftSize, &next_snapshot);
             next_snapshot.generation += 1u;
             next_snapshot.sample_rate = kAnalysisSampleRate;
         } else if (decay_snapshot) {
@@ -102,7 +102,7 @@ void EnsureWorkerStartedLocked()
 
 } // namespace
 
-bool SubmitAudioFrames(
+bool SubmitMonoAudioFrames(
     uint32_t sample_rate,
     uint32_t frame_count,
     const float* pcm_frames,
@@ -118,7 +118,7 @@ bool SubmitAudioFrames(
         return SetError(error, "pcm_frames must not be null");
     }
 
-    const size_t sample_count = static_cast<size_t>(frame_count) * kInterleavedChannels;
+    const size_t sample_count = static_cast<size_t>(frame_count);
 
     std::lock_guard<std::mutex> lock(g_state.mutex);
     EnsureWorkerStartedLocked();
@@ -138,6 +138,30 @@ bool SubmitAudioFrames(
     g_state.snapshot.accepted_frame_count += frame_count;
     g_state.condition.notify_one();
     return true;
+}
+
+bool SubmitAudioFrames(
+    uint32_t sample_rate,
+    uint32_t frame_count,
+    const float* pcm_frames,
+    std::string* error)
+{
+    if (sample_rate == 0) {
+        return SetError(error, "sample_rate must be greater than zero");
+    }
+    if (frame_count == 0) {
+        return SetError(error, "frame_count must be greater than zero");
+    }
+    if (pcm_frames == nullptr) {
+        return SetError(error, "pcm_frames must not be null");
+    }
+
+    std::vector<float> mono(static_cast<size_t>(frame_count), 0.0f);
+    for (uint32_t frame = 0; frame < frame_count; ++frame) {
+        mono[frame] = 0.5f * (pcm_frames[frame * 2u] + pcm_frames[(frame * 2u) + 1u]);
+    }
+
+    return SubmitMonoAudioFrames(sample_rate, frame_count, mono.data(), error);
 }
 
 AudioSpectrumSnapshot CurrentAudioSpectrumSnapshot()

@@ -94,25 +94,18 @@ void DeriveBands(const std::array<float, 64>& source, std::array<float, 32>& tar
     }
 }
 
-void AnalyzeMono(const float* interleaved_pcm, std::array<float, 64>& output)
+void AnalyzeMono(const float* mono_pcm, std::array<float, 64>& output)
 {
     const auto& resources = Resources();
 
-    std::array<float, kFftSize> mono {};
     std::array<float, kFftSize> windowed {};
     std::array<DSPComplex, kFftSize / 2u> complex_input {};
     std::array<float, kFftSize / 2u> realp {};
     std::array<float, kFftSize / 2u> imagp {};
     std::array<float, kFftSize / 2u> magnitudes {};
 
-    for (size_t index = 0; index < kFftSize; ++index) {
-        const float left = interleaved_pcm[index * 2u];
-        const float right = interleaved_pcm[(index * 2u) + 1u];
-        mono[index] = 0.5f * (left + right);
-    }
-
     vDSP_vmul(
-        mono.data(),
+        mono_pcm,
         1,
         resources.window.data(),
         1,
@@ -165,16 +158,16 @@ void AnalyzeMono(const float* interleaved_pcm, std::array<float, 64>& output)
 
 } // namespace
 
-void AnalyzeAudioResponseBlock(
-    const float* interleaved_pcm,
+void AnalyzeAudioResponseMonoBlock(
+    const float* mono_pcm,
     uint32_t frame_count,
     AudioSpectrumSnapshot* snapshot)
 {
-    if (interleaved_pcm == nullptr || snapshot == nullptr || frame_count < kFftSize) {
+    if (mono_pcm == nullptr || snapshot == nullptr || frame_count < kFftSize) {
         return;
     }
 
-    AnalyzeMono(interleaved_pcm, snapshot->average64);
+    AnalyzeMono(mono_pcm, snapshot->average64);
     snapshot->left64 = snapshot->average64;
     snapshot->right64 = snapshot->average64;
 
