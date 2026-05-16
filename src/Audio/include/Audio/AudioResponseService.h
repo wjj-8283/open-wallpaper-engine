@@ -10,7 +10,7 @@ namespace wallpaper::audio
 struct AudioSpectrumSnapshot
 {
     uint64_t generation { 0 };
-    uint32_t sample_rate { 48000 };
+    uint32_t sample_rate { 12000 };
     uint32_t last_submit_sample_rate { 0 };
     uint64_t accepted_frame_count { 0 };
     std::array<float, 64> left64 {};

@@ -42,6 +42,27 @@ bool SetError(std::string* error, std::string message)
     return false;
 }
 
+bool ValidateSubmitInput(
+    uint32_t sample_rate,
+    uint32_t frame_count,
+    const float* pcm_frames,
+    std::string* error)
+{
+    if (sample_rate == 0) {
+        return SetError(error, "sample_rate must be greater than zero");
+    }
+    if (sample_rate != kAnalysisSampleRate) {
+        return SetError(error, "sample_rate must be 12000 Hz for audio response analysis");
+    }
+    if (frame_count == 0) {
+        return SetError(error, "frame_count must be greater than zero");
+    }
+    if (pcm_frames == nullptr) {
+        return SetError(error, "pcm_frames must not be null");
+    }
+    return true;
+}
+
 void WorkerMain(std::stop_token stop_token)
 {
     while (!stop_token.stop_requested()) {
@@ -108,14 +129,8 @@ bool SubmitMonoAudioFrames(
     const float* pcm_frames,
     std::string* error)
 {
-    if (sample_rate == 0) {
-        return SetError(error, "sample_rate must be greater than zero");
-    }
-    if (frame_count == 0) {
-        return SetError(error, "frame_count must be greater than zero");
-    }
-    if (pcm_frames == nullptr) {
-        return SetError(error, "pcm_frames must not be null");
+    if (!ValidateSubmitInput(sample_rate, frame_count, pcm_frames, error)) {
+        return false;
     }
 
     const size_t sample_count = static_cast<size_t>(frame_count);
@@ -146,14 +161,8 @@ bool SubmitAudioFrames(
     const float* pcm_frames,
     std::string* error)
 {
-    if (sample_rate == 0) {
-        return SetError(error, "sample_rate must be greater than zero");
-    }
-    if (frame_count == 0) {
-        return SetError(error, "frame_count must be greater than zero");
-    }
-    if (pcm_frames == nullptr) {
-        return SetError(error, "pcm_frames must not be null");
+    if (!ValidateSubmitInput(sample_rate, frame_count, pcm_frames, error)) {
+        return false;
     }
 
     std::vector<float> mono(static_cast<size_t>(frame_count), 0.0f);

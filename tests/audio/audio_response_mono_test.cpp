@@ -87,6 +87,17 @@ TEST(AudioResponseMonoTest, MonoSubmitRejectsInvalidInput) {
     EXPECT_NE(error.find("pcm_frames"), std::string::npos);
 }
 
+TEST(AudioResponseMonoTest, MonoSubmitRejectsNonAnalysisSampleRate) {
+    ResetAudioResponseServiceForTesting();
+
+    std::array<float, 200> samples {};
+    std::string error;
+
+    EXPECT_FALSE(SubmitMonoAudioFrames(48'000u, kChunkFrameCount, samples.data(), &error));
+    EXPECT_NE(error.find("sample_rate"), std::string::npos);
+    EXPECT_NE(error.find("12000"), std::string::npos);
+}
+
 TEST(AudioResponseMonoTest, StereoCompatibilityWrapperDownmixesToMono) {
     ResetAudioResponseServiceForTesting();
 
@@ -129,6 +140,17 @@ TEST(AudioResponseMonoTest, StereoCompatibilityWrapperDownmixesToMono) {
     EXPECT_EQ(stereo_snapshot.right64, stereo_snapshot.average64);
     EXPECT_EQ(mono_snapshot.left64, mono_snapshot.average64);
     EXPECT_EQ(mono_snapshot.right64, mono_snapshot.average64);
+}
+
+TEST(AudioResponseMonoTest, StereoCompatibilityWrapperRejectsNonAnalysisSampleRate) {
+    ResetAudioResponseServiceForTesting();
+
+    std::array<float, 400> stereo {};
+    std::string error;
+
+    EXPECT_FALSE(SubmitAudioFrames(48'000u, kChunkFrameCount, stereo.data(), &error));
+    EXPECT_NE(error.find("sample_rate"), std::string::npos);
+    EXPECT_NE(error.find("12000"), std::string::npos);
 }
 
 } // namespace
