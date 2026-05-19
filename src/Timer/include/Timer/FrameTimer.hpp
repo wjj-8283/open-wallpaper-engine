@@ -30,6 +30,7 @@ public:
     void FrameEnd();
 
 private:
+    void ResetFrameTiming();
     void AddFrametime(std::chrono::microseconds);
     void UpdateFrametime();
 

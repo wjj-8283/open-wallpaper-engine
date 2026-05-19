@@ -7,6 +7,11 @@ using namespace wallpaper;
 using micros = std::chrono::microseconds;
 using namespace std::chrono;
 
+namespace
+{
+constexpr auto MAX_FRAME_DURATION = seconds(5);
+}
+
 FrameTimer::FrameTimer(std::function<void()> cb)
     : m_callback(cb), m_frame_busy_count(0), m_timer([this]() {
           microseconds wait_time = m_frametime.load();
@@ -44,14 +49,20 @@ void FrameTimer::UpdateFrametime() {
                       m_frametime_queue.size());
 }
 
+void FrameTimer::ResetFrameTiming() {
+    m_frametime_queue.clear();
+    for (usize i = 0; i < FrameTimer::FRAMETIME_QUEUE_SIZE; i++) {
+        AddFrametime(m_ideatime.load());
+    }
+    UpdateFrametime();
+    m_frame_busy_count.store(0);
+}
+
 void FrameTimer::SetRequiredFps(u16 value) {
     m_req_fps             = value;
     microseconds ideatime = milliseconds(1000 / m_req_fps);
     m_ideatime            = ideatime;
-    for (usize i = 0; i < FrameTimer::FRAMETIME_QUEUE_SIZE; i++) {
-        AddFrametime(ideatime);
-    }
-    UpdateFrametime();
+    ResetFrameTiming();
 }
 
 void FrameTimer::AddFrametime(micros t) {
@@ -64,8 +75,13 @@ void FrameTimer::AddFrametime(micros t) {
 void FrameTimer::FrameBegin() { m_clock = steady_clock::now(); }
 void FrameTimer::FrameEnd() {
     auto now = steady_clock::now();
-    AddFrametime(duration_cast<microseconds>(now - m_clock));
-    UpdateFrametime();
+    auto elapsed = duration_cast<microseconds>(now - m_clock);
+    if (elapsed > MAX_FRAME_DURATION) {
+        ResetFrameTiming();
+    } else {
+        AddFrametime(elapsed);
+        UpdateFrametime();
+    }
 
     i32 expected = m_frame_busy_count.load();
     while (expected > 0) {
@@ -78,6 +94,11 @@ void FrameTimer::FrameEnd() {
 void FrameTimer::SetCallback(const std::function<void()>& cb) {
     if (! Running()) m_callback = cb;
 }
-void FrameTimer::Run() { m_timer.Start(); }
+void FrameTimer::Run() {
+    if (! Running()) {
+        ResetFrameTiming();
+    }
+    m_timer.Start();
+}
 void FrameTimer::Stop() { m_timer.Stop(); }
 bool FrameTimer::Running() const { return m_timer.Running(); }
