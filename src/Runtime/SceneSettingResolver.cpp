@@ -116,6 +116,23 @@ void bind_user_property(SceneRuntimeContext& context, const nlohmann::json& sett
     }
 }
 
+void bind_vec3_user_property(
+    SceneRuntimeContext& context,
+    const nlohmann::json& setting,
+    DynamicValue& value)
+{
+    std::string user_name;
+    const auto  condition = parse_condition(setting, &user_name);
+    if (user_name.empty()) return;
+
+    if (condition.has_value()) value.attachCondition(*condition);
+
+    auto* property_value = context.FindPropertyValue(user_name);
+    if (property_value == nullptr) return;
+
+    value.connectVec3(property_value);
+}
+
 DynamicValueUniquePtr wrap_script_if_needed(
     SceneRuntimeContext& context,
     const nlohmann::json& setting,
@@ -164,9 +181,17 @@ DynamicValueUniquePtr resolve_auto_setting(
 {
     const auto& source = unwrap_value(setting);
     if (source.is_boolean()) return ResolveBoolSetting(context, setting, current_layer_name);
-    if (source.is_number()) return std::make_unique<DynamicValue>(parse_float(setting));
-    if (source.is_string()) return std::make_unique<DynamicValue>(parse_string(setting));
-    return std::make_unique<DynamicValue>();
+
+    DynamicValueUniquePtr value;
+    if (source.is_number()) {
+        value = std::make_unique<DynamicValue>(parse_float(setting));
+    } else if (source.is_string()) {
+        value = std::make_unique<DynamicValue>(parse_string(setting));
+    } else {
+        value = std::make_unique<DynamicValue>();
+    }
+    bind_user_property(context, setting, *value);
+    return value;
 }
 
 } // namespace
@@ -246,7 +271,7 @@ std::unique_ptr<DynamicValue> ResolveVec3Setting(
         std::move(value),
         scripted_semantic,
         allow_script_update);
-    bind_user_property(context, setting, *value);
+    bind_vec3_user_property(context, setting, *value);
     return value;
 }
 

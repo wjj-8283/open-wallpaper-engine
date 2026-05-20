@@ -77,6 +77,7 @@ public:
 
     std::function<void()> listen(const std::function<void(const DynamicValue&)>& callback);
     void                  connect(DynamicValue* other);
+    void                  connectVec3(DynamicValue* other);
     void                  disconnect();
     void                  attachCondition(const ConditionInfo& condition);
 

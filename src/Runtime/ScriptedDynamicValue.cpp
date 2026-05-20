@@ -42,11 +42,16 @@ ScriptedDynamicValue::ScriptedDynamicValue(
 
 ScriptedDynamicValue::~ScriptedDynamicValue() = default;
 
+void ScriptedDynamicValue::update(const DynamicValue& other) {
+    m_base_value.update(other);
+    DynamicValue::update(other);
+}
+
 void ScriptedDynamicValue::reevaluate() {
     if (m_program == nullptr || ! m_program->Valid()) return;
 
     auto result = m_program->Evaluate(m_runtime->hostContext(), m_base_value);
-    if (result != nullptr) update(*result);
+    if (result != nullptr) DynamicValue::update(*result);
 }
 
 void ScriptedDynamicValue::DispatchCursorClick(const ScriptHostContext& host_context) {

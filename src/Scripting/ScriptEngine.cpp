@@ -2561,6 +2561,14 @@ DynamicValueUniquePtr PropertyScriptProgram::Evaluate(const ScriptHostContext& h
         return fallback;
     }
 
+    if (current_value.getType() == DynamicValue::Boolean &&
+        JS_VALUE_GET_TAG(result) == JS_TAG_OBJECT) {
+        JS_FreeValue(context_handle, result);
+        auto fallback = std::make_unique<DynamicValue>();
+        fallback->update(current_value);
+        return fallback;
+    }
+
     auto dynamic_result = JsToDynamicValue(context_handle, result, current_value.getType());
     if (dynamic_result != nullptr && m_semantic == PropertyScriptValueSemantic::AnglesDegrees &&
         dynamic_result->getType() == DynamicValue::Vec3) {

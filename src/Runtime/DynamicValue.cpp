@@ -2,8 +2,22 @@
 
 #include "Utils/Logging.h"
 
+#include <sstream>
+
 namespace wallpaper
 {
+namespace
+{
+Eigen::Vector3f ParseVec3String(const std::string& value)
+{
+    std::istringstream stream(value);
+    float x = 0.0f;
+    float y = 0.0f;
+    float z = 0.0f;
+    stream >> x >> y >> z;
+    return Eigen::Vector3f(x, y, z);
+}
+} // namespace
 
 DynamicValue::DynamicValue(const Eigen::Vector4i& value) { update(value); }
 DynamicValue::DynamicValue(const Eigen::Vector3i& value) { update(value); }
@@ -280,6 +294,23 @@ void DynamicValue::connect(DynamicValue* other)
             update();
         } else {
             update(source);
+        }
+    };
+
+    const auto deregister = other->listen(listener);
+    listener(*other);
+    m_connections.push_back(deregister);
+}
+
+void DynamicValue::connectVec3(DynamicValue* other)
+{
+    const auto listener = [this](const DynamicValue& source) {
+        if (source.getType() == UnderlyingType::Null) {
+            update();
+        } else if (source.getType() == UnderlyingType::String) {
+            update(ParseVec3String(source.getString()));
+        } else {
+            update(source.getVec3());
         }
     };
 

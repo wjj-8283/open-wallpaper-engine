@@ -28,6 +28,8 @@ public:
                          ScriptedValueSemantic semantic = ScriptedValueSemantic::Generic);
     ~ScriptedDynamicValue() override;
 
+    void update(const DynamicValue& other) override;
+
     void reevaluate();
     void DispatchCursorClick(const ScriptHostContext& host_context);
     void DispatchCursorDown(const ScriptHostContext& host_context);
