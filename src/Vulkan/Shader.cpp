@@ -426,7 +426,14 @@ bool wallpaper::vulkan::CompileAndLinkShaderUnits(std::span<const ShaderCompUnit
         return false;
     }
 
-    if (! (program.mapIO())) {
+    for (auto& unit : compUnits) {
+        (void)program.getIntermediate(unit.stage);
+    }
+
+    std::unique_ptr<glslang::TIoMapResolver> resolver(program.getGlslIoResolver(compUnits[0].stage));
+    std::unique_ptr<glslang::TIoMapper>      ioMapper(glslang::GetGlslIoMapper());
+
+    if (! (program.mapIO(resolver.get(), ioMapper.get()))) {
         LOG_ERROR("glslang(mapIo): %s\n", program.getInfoLog());
         return false;
     }

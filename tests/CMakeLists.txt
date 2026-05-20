@@ -85,7 +85,7 @@ if(APPLE)
             -P ${CMAKE_CURRENT_SOURCE_DIR}/audio/coreaudio_backend_config.cmake)
 endif()
 add_executable(shader_cache_metadata_test shader_cache_metadata_test.cpp)
-target_link_libraries(shader_cache_metadata_test PRIVATE ${PROJECT_NAME} wpFs wpScene GTest::gtest_main)
+target_link_libraries(shader_cache_metadata_test PRIVATE ${PROJECT_NAME} wpFs wpScene wpVulkan GTest::gtest_main)
 target_include_directories(shader_cache_metadata_test PRIVATE .)
 target_compile_features(shader_cache_metadata_test PRIVATE cxx_std_20)
 gtest_discover_tests(
