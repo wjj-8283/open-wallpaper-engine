@@ -31,9 +31,12 @@ enum
     LOGLEVEL_ERROR = 1
 };
 
-#define LOG_INFO(...)  WallpaperLog(LOGLEVEL_INFO, "", 0, __VA_ARGS__)
+#define LOG_INFO(...)  WallpaperLog(LOGLEVEL_INFO, __SHORT_FILE__, __LINE__, __VA_ARGS__)
 #define LOG_ERROR(...) WallpaperLog(LOGLEVEL_ERROR, __SHORT_FILE__, __LINE__, __VA_ARGS__)
 
+using WallpaperLogCallback = void (*)(int level, const char* file, int line, const char* message);
+
+void SetWallpaperLogCallback(WallpaperLogCallback callback);
 void WallpaperLog(int level, const char* file, int line, const char* fmt, ...);
 
 std::string logToTmpfileWithSha1(std::span<const char>, const char* fmt, ...);

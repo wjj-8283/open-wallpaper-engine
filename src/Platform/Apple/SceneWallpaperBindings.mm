@@ -3,6 +3,7 @@
 #include "Audio/AudioResponseService.h"
 #include "SceneWallpaper.hpp"
 #include "SceneWallpaperSurface.hpp"
+#include "Utils/Logging.h"
 
 #import <QuartzCore/CAMetalLayer.h>
 
@@ -128,6 +129,11 @@ const char* property_name(std::string_view value)
 struct owe_scene_wallpaper {
     wallpaper::SceneWallpaper scene;
 };
+
+extern "C" void owe_set_log_callback(owe_log_callback callback)
+{
+    SetWallpaperLogCallback(callback);
+}
 
 extern "C" int owe_scene_wallpaper_new(owe_scene_wallpaper** out_scene)
 {

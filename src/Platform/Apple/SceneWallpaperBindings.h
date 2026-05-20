@@ -19,6 +19,10 @@ extern "C" {
 /* Opaque wallpaper::SceneWallpaper owner. */
 typedef struct owe_scene_wallpaper owe_scene_wallpaper;
 
+typedef void (*owe_log_callback)(int level, const char* file, int line, const char* message);
+
+void owe_set_log_callback(owe_log_callback callback);
+
 /* Renderer lifetime. */
 int owe_scene_wallpaper_new(owe_scene_wallpaper** out_scene);
 int owe_scene_wallpaper_delete(owe_scene_wallpaper* scene);
