@@ -870,10 +870,12 @@ void TextureCache::allocateVideoImportCmd() {
     const auto& pool = m_device.cmd_pool();
     VVK_CHECK(pool.Allocate(1, VK_COMMAND_BUFFER_LEVEL_PRIMARY, m_video_import_cmds));
     m_video_import_cmd = vvk::CommandBuffer(m_video_import_cmds[0], m_device.handle().Dispatch());
+    ++m_video_submission_stats.command_buffer_allocations;
 }
 
 bool TextureCache::waitForPendingVideoImport(std::string* error) {
     if (! m_video_import_pending) return true;
+    ++m_video_submission_stats.fence_waits;
 
     if (const VkResult result = m_video_import_fence.Wait(); result != VK_SUCCESS) {
         VVK_CHECK(result);
@@ -959,6 +961,12 @@ void TextureCache::SetVideoPlaybackPaused(bool paused) { m_video_playback_state.
 
 void TextureCache::SetVideoPlaybackRate(float rate) { m_video_playback_state.rate = rate; }
 
+VideoTextureSubmissionStats TextureCache::VideoSubmissionStats() const {
+    return m_video_submission_stats;
+}
+
+void TextureCache::ResetVideoSubmissionStats() { m_video_submission_stats = {}; }
+
 double TextureCache::GetVideoDuration(std::string_view key) const {
     const auto iterator = m_video_tex_map.find(std::string(key));
     if (iterator == m_video_tex_map.end() || iterator->second == nullptr ||
@@ -1005,6 +1013,7 @@ bool TextureCache::EnsureVideoFrameCacheRoom(VideoTex& video_tex, std::string* e
         }
         if (victim == video_tex.imported_frames.end()) return true;
         if (! waitForPendingVideoImport(error)) return false;
+        ++m_video_submission_stats.evictions;
         video_tex.imported_frames.erase(victim);
     }
     return true;
@@ -1024,6 +1033,7 @@ void TextureCache::Clear() {
 bool TextureCache::UpdateVideoFrame(std::string_view                 key,
                                     const video::VideoPlaybackState& playback_state,
                                     ImageSlotsRef* out, std::string* error) {
+    ++m_video_submission_stats.update_calls;
     if (! exists(m_video_tex_map, key)) {
         return SetError(error, std::string("video texture not registered: ") + std::string(key));
     }
@@ -1033,11 +1043,8 @@ bool TextureCache::UpdateVideoFrame(std::string_view                 key,
         return SetError(error, std::string("video texture source missing: ") + std::string(key));
     }
 
-    video::VideoPlaybackState effective_state = playback_state;
-    effective_state.paused = m_video_playback_state.paused || playback_state.paused;
-    effective_state.rate =
-        std::max(0.0f, m_video_playback_state.rate) * std::max(0.0f, playback_state.rate);
-    effective_state.scene_elapsed_seconds = playback_state.scene_elapsed_seconds;
+    const video::VideoPlaybackState effective_state =
+        ResolveEffectiveVideoPlaybackState(m_video_playback_state, playback_state);
 
     if (! video_tex.source->syncPlayback(effective_state, error)) {
         return false;
@@ -1055,6 +1062,7 @@ bool TextureCache::UpdateVideoFrame(std::string_view                 key,
     void* surface_identity = frame.io_surface != nullptr ? frame.io_surface : frame.pixel_buffer;
     if (auto* imported_frame = FindImportedVideoFrame(video_tex, frame, surface_identity);
         imported_frame != nullptr) {
+        ++m_video_submission_stats.cache_hits;
         imported_frame->generation = frame.generation;
         imported_frame->last_used  = ++video_tex.frame_use_serial;
         video_tex.current_frame    = imported_frame;
@@ -1107,6 +1115,7 @@ bool TextureCache::UpdateVideoFrame(std::string_view                 key,
                 video::ReleaseAppleVideoMetalTexture(metal_texture);
                 return SetError(error, "failed to create Vulkan fence for video frame import");
             }
+            ++m_video_submission_stats.fence_allocations;
         }
         if (! waitForPendingVideoImport(error)) {
             video::ReleaseAppleVideoMetalTexture(metal_texture);
@@ -1136,6 +1145,7 @@ bool TextureCache::UpdateVideoFrame(std::string_view                 key,
 
         video_tex.current_frame = new_imported_frame.get();
         video_tex.imported_frames.emplace_back(std::move(new_imported_frame));
+        ++m_video_submission_stats.new_imports;
     }
 
     if (out != nullptr && video_tex.current_frame != nullptr) {

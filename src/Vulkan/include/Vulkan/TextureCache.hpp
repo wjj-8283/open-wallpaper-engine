@@ -8,6 +8,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <algorithm>
 #include <memory>
 #include <vector>
 
@@ -32,6 +33,27 @@ enum class TexUsage
 
 using TexHash = std::size_t;
 
+struct VideoTextureSubmissionStats {
+    std::uint64_t update_calls { 0 };
+    std::uint64_t cache_hits { 0 };
+    std::uint64_t new_imports { 0 };
+    std::uint64_t fence_waits { 0 };
+    std::uint64_t evictions { 0 };
+    std::uint64_t command_buffer_allocations { 0 };
+    std::uint64_t fence_allocations { 0 };
+};
+
+inline video::VideoPlaybackState
+ResolveEffectiveVideoPlaybackState(const video::VideoPlaybackState& global_state,
+                                   const video::VideoPlaybackState& layer_state) {
+    video::VideoPlaybackState effective_state = layer_state;
+    effective_state.paused = global_state.paused || layer_state.paused;
+    effective_state.rate =
+        std::max(0.0f, global_state.rate) * std::max(0.0f, layer_state.rate);
+    effective_state.scene_elapsed_seconds = layer_state.scene_elapsed_seconds;
+    return effective_state;
+}
+
 struct TextureKey {
     i32           width;
     i32           height;
@@ -55,6 +77,8 @@ public:
     ImageSlotsRef                    CreateTex(Image&);
     void                             SetVideoPlaybackPaused(bool paused);
     void                             SetVideoPlaybackRate(float rate);
+    [[nodiscard]] VideoTextureSubmissionStats VideoSubmissionStats() const;
+    void                                      ResetVideoSubmissionStats();
     double                           GetVideoDuration(std::string_view key) const;
     bool UpdateVideoFrame(std::string_view key, const video::VideoPlaybackState& playback_state,
                           ImageSlotsRef* out, std::string* error = nullptr);
@@ -108,6 +132,7 @@ private:
     bool                EnsureVideoFrameCacheRoom(VideoTex& video_tex, std::string* error);
     Map<std::string, std::unique_ptr<VideoTex>> m_video_tex_map;
     video::VideoPlaybackState                   m_video_playback_state {};
+    VideoTextureSubmissionStats                 m_video_submission_stats {};
     void*                                       m_metal_device { nullptr };
     bool                                        m_metal_device_queried { false };
 

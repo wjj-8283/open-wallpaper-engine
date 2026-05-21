@@ -159,6 +159,21 @@ gtest_discover_tests(
     PROPERTIES TIMEOUT 30
     DISCOVERY_TIMEOUT 60
 )
+add_executable(video_texture_submission_smoke video_texture_submission_smoke.cpp)
+target_link_libraries(video_texture_submission_smoke PRIVATE GTest::gtest_main)
+target_include_directories(video_texture_submission_smoke PRIVATE
+    .
+    ${CMAKE_SOURCE_DIR}/src
+    ${CMAKE_SOURCE_DIR}/src/Vulkan/include
+    ${CMAKE_SOURCE_DIR}/src/Utils/include
+    ${CMAKE_SOURCE_DIR}/src/Scene/include
+)
+target_compile_features(video_texture_submission_smoke PRIVATE cxx_std_20)
+gtest_discover_tests(
+    video_texture_submission_smoke
+    PROPERTIES TIMEOUT 30
+    DISCOVERY_TIMEOUT 60
+)
 add_executable(script_runtime_compat_test script_runtime_compat_test.cpp)
 target_link_libraries(script_runtime_compat_test PRIVATE ${PROJECT_NAME} wpScene wpFs GTest::gtest_main)
 target_include_directories(script_runtime_compat_test PRIVATE .)

@@ -92,6 +92,33 @@ scene.on('mediaPlaybackChanged', function(event) {
     EXPECT_EQ(fixture.runtime->scriptErrorCount(), 0u);
 }
 
+TEST(SceneScriptMediaEventSmoke, VideoPlaybackControlsResolveWrappedState) {
+    auto runtime = CreateSceneRuntimeContext(SceneRuntimeBootstrap {});
+    ASSERT_NE(runtime, nullptr);
+
+    runtime->RegisterNodeVideoTexture("videoLayer", "textures/clip.mp4");
+    runtime->SetVideoTextureDuration("textures/clip.mp4", 3.0);
+
+    EXPECT_TRUE(runtime->PauseNodeVideoTexture("videoLayer"));
+    EXPECT_TRUE(runtime->SetNodeVideoTextureCurrentTime("videoLayer", 7.5));
+    EXPECT_TRUE(runtime->SetNodeVideoTextureRate("videoLayer", -2.0f));
+
+    const auto state = runtime->ResolveVideoPlaybackState("textures/clip.mp4", 99.0);
+    EXPECT_TRUE(state.paused);
+    EXPECT_FLOAT_EQ(state.rate, 0.0f);
+    EXPECT_DOUBLE_EQ(state.scene_elapsed_seconds, 1.5);
+}
+
+TEST(SceneScriptMediaEventSmoke, MissingVideoPlaybackUsesFallbackElapsedTime) {
+    auto runtime = CreateSceneRuntimeContext(SceneRuntimeBootstrap {});
+    ASSERT_NE(runtime, nullptr);
+
+    const auto state = runtime->ResolveVideoPlaybackState("textures/missing.mp4", 12.25);
+    EXPECT_FALSE(state.paused);
+    EXPECT_FLOAT_EQ(state.rate, 1.0f);
+    EXPECT_DOUBLE_EQ(state.scene_elapsed_seconds, 12.25);
+}
+
 TEST(SceneScriptMediaEventSmoke, StringBackedVec3ProjectPropertyKeepsVectorValue) {
     auto runtime = CreateSceneRuntimeContext(SceneRuntimeBootstrap {
         .project_properties = {
