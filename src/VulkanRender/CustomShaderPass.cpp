@@ -32,6 +32,7 @@ CustomShaderPass::CustomShaderPass(const Desc& desc) {
     m_desc.textures        = desc.textures;
     m_desc.output          = desc.output;
     m_desc.camera_override = desc.camera_override;
+    m_desc.sample_count    = desc.sample_count;
     m_desc.sprites_map     = desc.sprites_map;
     m_desc.video_textures  = desc.video_textures;
 };
@@ -39,24 +40,48 @@ CustomShaderPass::~CustomShaderPass() {}
 
 std::optional<vvk::RenderPass> CreateRenderPass(const vvk::Device& device, VkFormat format,
                                                 VkAttachmentLoadOp loadOp,
-                                                VkImageLayout      finalLayout) {
-    VkAttachmentDescription attachment {
+                                                VkImageLayout      finalLayout,
+                                                VkSampleCountFlagBits sample_count) {
+    const auto plan = PlanCustomPassMsaaAttachments(sample_count);
+
+    VkAttachmentDescription color {
         .format         = format,
-        .samples        = VK_SAMPLE_COUNT_1_BIT,
+        .samples        = plan.color_samples,
         .loadOp         = loadOp, // VK_ATTACHMENT_LOAD_OP_CLEAR,
         .storeOp        = VK_ATTACHMENT_STORE_OP_STORE,
         .stencilLoadOp  = VK_ATTACHMENT_LOAD_OP_DONT_CARE,
         .stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE,
         .initialLayout  = VK_IMAGE_LAYOUT_UNDEFINED,
-        .finalLayout    = finalLayout, // ShaderReadOnlyOptimal
+        .finalLayout =
+            plan.needs_resolve_attachment ? VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL
+                                          : finalLayout, // ShaderReadOnlyOptimal
     };
 
     if (loadOp == VK_ATTACHMENT_LOAD_OP_LOAD) {
-        attachment.initialLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+        color.initialLayout = plan.needs_resolve_attachment
+                                  ? VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL
+                                  : VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
     }
+
+    VkAttachmentDescription resolve {
+        .format         = format,
+        .samples        = plan.resolve_samples,
+        .loadOp         = VK_ATTACHMENT_LOAD_OP_DONT_CARE,
+        .storeOp        = VK_ATTACHMENT_STORE_OP_STORE,
+        .stencilLoadOp  = VK_ATTACHMENT_LOAD_OP_DONT_CARE,
+        .stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE,
+        .initialLayout  = VK_IMAGE_LAYOUT_UNDEFINED,
+        .finalLayout    = finalLayout,
+    };
+
+    std::array<VkAttachmentDescription, 2> attachments { color, resolve };
 
     VkAttachmentReference attachment_ref {
         .attachment = 0,
+        .layout     = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+    };
+    VkAttachmentReference resolve_ref {
+        .attachment = 1,
         .layout     = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
     };
 
@@ -64,21 +89,23 @@ std::optional<vvk::RenderPass> CreateRenderPass(const vvk::Device& device, VkFor
         .pipelineBindPoint    = VK_PIPELINE_BIND_POINT_GRAPHICS,
         .colorAttachmentCount = 1,
         .pColorAttachments    = &attachment_ref,
+        .pResolveAttachments  = plan.needs_resolve_attachment ? &resolve_ref : nullptr,
     };
 
     VkSubpassDependency dependency {
         .srcSubpass    = VK_SUBPASS_EXTERNAL,
         .dstSubpass    = 0,
-        .srcStageMask  = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+        .srcStageMask  = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT |
+                         VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
         .dstStageMask  = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
-        .srcAccessMask = {},
+        .srcAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
         .dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_READ_BIT | VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
     };
 
     VkRenderPassCreateInfo creatinfo {
         .sType           = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO,
-        .attachmentCount = 1,
-        .pAttachments    = &attachment,
+        .attachmentCount = plan.attachment_count,
+        .pAttachments    = attachments.data(),
         .subpassCount    = 1,
         .pSubpasses      = &subpass,
         .dependencyCount = 1,
@@ -164,11 +191,28 @@ void CustomShaderPass::prepare(Scene& scene, const Device& device, RenderingReso
             return;
         }
         auto& rt = *scene.FindRenderTarget(tex_name);
+        m_desc.sample_count = ResolveCustomPassRenderTargetSampleCount(
+            SampleCountValue(m_desc.sample_count), device.limits().framebufferColorSampleCounts);
         if (auto opt = device.tex_cache().Query(tex_name, ToTexKey(rt), ! rt.allowReuse);
             opt.has_value()) {
             m_desc.vk_output = opt.value();
         } else
             return;
+
+        if (m_desc.sample_count != VK_SAMPLE_COUNT_1_BIT) {
+            const auto  msaa_key  = ToTexKeyMsaa(rt, m_desc.sample_count);
+            const auto  sample_id = SampleCountValue(m_desc.sample_count);
+            std::string twin_name =
+                tex_name + "::msaa" + std::to_string(static_cast<unsigned>(sample_id));
+            if (auto opt = device.tex_cache().Query(twin_name, msaa_key, true);
+                opt.has_value()) {
+                m_desc.vk_output_msaa = opt.value();
+            } else {
+                LOG_ERROR("failed to allocate MSAA attachment for render target: %s",
+                          tex_name.c_str());
+                return;
+            }
+        }
     }
 
     SceneMesh& mesh = *(m_desc.node->Mesh());
@@ -288,7 +332,8 @@ void CustomShaderPass::prepare(Scene& scene, const Device& device, RenderingReso
         auto opt = CreateRenderPass(device.handle(),
                                     VK_FORMAT_R8G8B8A8_UNORM,
                                     loadOp,
-                                    VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+                                    VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                                    m_desc.sample_count);
         if (! opt.has_value()) return;
         auto& pass = opt.value();
 
@@ -303,19 +348,22 @@ void CustomShaderPass::prepare(Scene& scene, const Device& device, RenderingReso
             .setTopology(m_desc.index_buf ? VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST
                                           : VK_PRIMITIVE_TOPOLOGY_TRIANGLE_STRIP)
             .addInputBindingDescription(bind_descriptions)
-            .addInputAttributeDescription(attr_descriptions);
+            .addInputAttributeDescription(attr_descriptions)
+            .setSampleCount(m_desc.sample_count);
         for (auto& spv : spvs) pipeline.addStage(std::move(spv));
 
         if (! pipeline.create(device, pass, m_desc.pipeline)) return;
     }
 
     {
+        auto render_info = renderInfo();
+        auto views       = CustomPassFramebufferAttachmentViews(render_info);
         VkFramebufferCreateInfo info {
             .sType           = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO,
             .pNext           = nullptr,
             .renderPass      = *m_desc.pipeline.pass,
-            .attachmentCount = 1,
-            .pAttachments    = &m_desc.vk_output.view,
+            .attachmentCount = views.size(),
+            .pAttachments    = views.data(),
             .width           = m_desc.vk_output.extent.width,
             .height          = m_desc.vk_output.extent.height,
             .layers          = 1,
@@ -480,10 +528,13 @@ CustomPassRenderInfo CustomShaderPass::renderInfo() const {
     return CustomPassRenderInfo {
         .image        = m_desc.vk_output.handle,
         .view         = m_desc.vk_output.view,
+        .msaa_image   = m_desc.vk_output_msaa.handle,
+        .msaa_view    = m_desc.vk_output_msaa.view,
         .extent       = m_desc.vk_output.extent,
         .final_layout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
         .load_op =
             ResolveAttachmentLoadOp(m_desc.preserve_target_contents, m_desc.clear_on_first_use),
+        .sample_count = m_desc.sample_count,
         .render_pass = *m_desc.pipeline.pass,
         .framebuffer = *m_desc.fb,
         .clear_value = m_desc.clear_value,
@@ -624,38 +675,58 @@ void CustomShaderPass::recordClear(const Device&, RenderingResources& rr) {
         .baseArrayLayer = 0,
         .layerCount     = VK_REMAINING_ARRAY_LAYERS,
     };
-    VkImageMemoryBarrier in_bar {
-        .sType            = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
-        .pNext            = nullptr,
-        .srcAccessMask    = VK_ACCESS_MEMORY_READ_BIT,
-        .dstAccessMask    = VK_ACCESS_TRANSFER_WRITE_BIT,
-        .oldLayout        = VK_IMAGE_LAYOUT_UNDEFINED,
-        .newLayout        = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-        .image            = m_desc.vk_output.handle,
-        .subresourceRange = base_srang,
+    const auto clear_image = [&](VkImage image, VkImageLayout old_layout,
+                                 VkImageLayout final_layout, VkPipelineStageFlags src_stage,
+                                 VkAccessFlags src_access, VkPipelineStageFlags dst_stage,
+                                 VkAccessFlags dst_access) {
+        if (image == VK_NULL_HANDLE) return;
+        VkImageMemoryBarrier in_bar {
+            .sType            = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
+            .pNext            = nullptr,
+            .srcAccessMask    = src_access,
+            .dstAccessMask    = VK_ACCESS_TRANSFER_WRITE_BIT,
+            .oldLayout        = old_layout,
+            .newLayout        = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+            .image            = image,
+            .subresourceRange = base_srang,
+        };
+        cmd.PipelineBarrier(src_stage,
+                            VK_PIPELINE_STAGE_TRANSFER_BIT,
+                            VK_DEPENDENCY_BY_REGION_BIT,
+                            in_bar);
+        cmd.ClearColorImage(image,
+                            VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                            &m_desc.clear_value.color,
+                            base_srang);
+        VkImageMemoryBarrier out_bar {
+            .sType            = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
+            .pNext            = nullptr,
+            .srcAccessMask    = VK_ACCESS_TRANSFER_WRITE_BIT,
+            .dstAccessMask    = dst_access,
+            .oldLayout        = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+            .newLayout        = final_layout,
+            .image            = image,
+            .subresourceRange = base_srang,
+        };
+        cmd.PipelineBarrier(VK_PIPELINE_STAGE_TRANSFER_BIT,
+                            dst_stage,
+                            VK_DEPENDENCY_BY_REGION_BIT,
+                            out_bar);
     };
-    cmd.PipelineBarrier(VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
-                        VK_PIPELINE_STAGE_TRANSFER_BIT,
-                        VK_DEPENDENCY_BY_REGION_BIT,
-                        in_bar);
-    cmd.ClearColorImage(m_desc.vk_output.handle,
-                        VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-                        &m_desc.clear_value.color,
-                        base_srang);
-    VkImageMemoryBarrier out_bar {
-        .sType            = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
-        .pNext            = nullptr,
-        .srcAccessMask    = VK_ACCESS_TRANSFER_WRITE_BIT,
-        .dstAccessMask    = VK_ACCESS_MEMORY_READ_BIT,
-        .oldLayout        = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-        .newLayout        = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
-        .image            = m_desc.vk_output.handle,
-        .subresourceRange = base_srang,
-    };
-    cmd.PipelineBarrier(VK_PIPELINE_STAGE_TRANSFER_BIT,
-                        VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
-                        VK_DEPENDENCY_BY_REGION_BIT,
-                        out_bar);
+    clear_image(m_desc.vk_output.handle,
+                VK_IMAGE_LAYOUT_UNDEFINED,
+                VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+                0,
+                VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+                VK_ACCESS_MEMORY_READ_BIT);
+    clear_image(m_desc.vk_output_msaa.handle,
+                VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+                VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+                VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+                VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
+                VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+                VK_ACCESS_COLOR_ATTACHMENT_READ_BIT | VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT);
 }
 
 void CustomShaderPass::execute(const Device& device, RenderingResources& rr) {
@@ -668,6 +739,7 @@ void CustomShaderPass::execute(const Device& device, RenderingResources& rr) {
     }
 
     const auto            info = renderInfo();
+    std::array<VkClearValue, 2> clear_values { info.clear_value, VkClearValue {} };
     VkRenderPassBeginInfo pass_begin_info {
         .sType       = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO,
         .pNext       = nullptr,
@@ -678,8 +750,8 @@ void CustomShaderPass::execute(const Device& device, RenderingResources& rr) {
                 .offset = { 0, 0 },
                 .extent = { info.extent.width, info.extent.height },
             },
-        .clearValueCount = 1,
-        .pClearValues    = &info.clear_value,
+        .clearValueCount = CustomPassBeginRenderPassClearValueCount(info),
+        .pClearValues    = clear_values.data(),
     };
     rr.command.BeginRenderPass(pass_begin_info, VK_SUBPASS_CONTENTS_INLINE);
     recordDraw(device, rr);

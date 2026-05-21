@@ -33,6 +33,7 @@ public:
         bool                     preserve_target_contents { false };
         bool                     write_alpha { true };
         bool                     alpha_to_coverage { false };
+        VkSampleCountFlagBits    sample_count { VK_SAMPLE_COUNT_1_BIT };
         sprite_map_t             sprites_map;
 
         // -----prepared
@@ -41,6 +42,7 @@ public:
         std::vector<i32>           vk_tex_binding;
         std::vector<bool>          video_textures;
         ImageParameters            vk_output;
+        ImageParameters            vk_output_msaa;
 
         // bufs
         bool                          dyn_vertex { false };

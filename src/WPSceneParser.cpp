@@ -43,6 +43,7 @@
 #include <random>
 #include <cmath>
 #include <functional>
+#include <optional>
 #include <regex>
 #include <variant>
 #include <Eigen/Dense>
@@ -1075,6 +1076,12 @@ void LoadConstvalue(SceneMaterial& material, const wpscene::WPMaterial& wpmat,
     }
 }
 
+void AddConstantValue(wpscene::WPMaterial& material, std::string name, std::vector<float> value) {
+    material.constantshadervalues[std::move(name)] = wpscene::WPConstantShaderValue {
+        .value = std::move(value),
+    };
+}
+
 void RegisterMaterialConstants(ParseContext& context, SceneMaterial* material,
                                const wpscene::WPMaterial& wpmat, const WPShaderInfo& info) {
     if (material == nullptr || context.scene->runtime == nullptr) return;
@@ -1131,6 +1138,197 @@ void ParseCamera(ParseContext& context, wpscene::WPSceneGeneral& general) {
     context.global_perspective_camera_node = std::make_shared<SceneNode>(cperori, cscale, cangle);
     scene.cameras["global_perspective"]->AttatchNode(context.global_perspective_camera_node);
     scene.sceneGraph->AppendChild(context.global_perspective_camera_node);
+}
+
+void AddScreenRenderTarget(Scene& scene, std::string name, i32 render_width, i32 render_height,
+                           double scale) {
+    scene.renderTargets[std::move(name)] = {
+        .width      = std::max(1, static_cast<i32>(static_cast<double>(render_width) * scale)),
+        .height     = std::max(1, static_cast<i32>(static_cast<double>(render_height) * scale)),
+        .allowReuse = true,
+        .bind       = { .enable = true, .screen = true, .scale = scale },
+    };
+}
+
+struct StagedPostProcessNode {
+    std::shared_ptr<SceneNode> node;
+    WPShaderValueData          shader_value_data;
+    wpscene::WPMaterial        material;
+    WPShaderInfo               shader_info;
+};
+
+class BloomRenderTargetRollback {
+public:
+    explicit BloomRenderTargetRollback(Scene& scene): m_scene(scene) {
+        for (const auto& name : kBloomRenderTargets) {
+            const std::string key(name);
+            const auto        it = m_scene.renderTargets.find(key);
+            if (it == m_scene.renderTargets.end()) {
+                m_previous.emplace_back(key, std::nullopt);
+            } else {
+                m_previous.emplace_back(key, it->second);
+            }
+        }
+    }
+
+    ~BloomRenderTargetRollback() {
+        if (m_committed) return;
+        for (const auto& [name, render_target] : m_previous) {
+            if (render_target.has_value()) {
+                m_scene.renderTargets[name] = *render_target;
+            } else {
+                m_scene.renderTargets.erase(name);
+            }
+        }
+    }
+
+    void Commit() { m_committed = true; }
+
+private:
+    static constexpr std::array<std::string_view, 3> kBloomRenderTargets {
+        "_rt_bloom_mip1",
+        "_rt_bloom_mip2",
+        "_rt_bloom_combine",
+    };
+
+    Scene& m_scene;
+    bool   m_committed { false };
+    std::vector<std::pair<std::string, std::optional<SceneRenderTarget>>> m_previous;
+};
+
+std::optional<StagedPostProcessNode>
+BuildPostProcessNode(ParseContext&                   context,
+                     const std::string&              material_path,
+                     const std::vector<std::string>& textures,
+                     const wpscene::WPSceneGeneral&  general) {
+    nlohmann::json json;
+    if (! PARSE_JSON(fs::GetFileContent(*context.vfs, "/assets/" + material_path), json)) {
+        LOG_ERROR("load bloom material '%s' failed", material_path.c_str());
+        return std::nullopt;
+    }
+
+    wpscene::WPMaterial wpmat;
+    if (! wpmat.FromJson(json)) return std::nullopt;
+    wpmat.textures = textures;
+    if (material_path == "materials/util/downsample_quarter_bloom.json") {
+        AddConstantValue(wpmat, "bloomstrength", { general.bloomstrength });
+        AddConstantValue(wpmat, "bloomthreshold", { general.bloomthreshold });
+        AddConstantValue(wpmat,
+                         "bloomtint",
+                         { general.bloomtint[0], general.bloomtint[1], general.bloomtint[2] });
+    }
+
+    SceneMaterial     material;
+    WPShaderValueData sv_data;
+    WPShaderInfo      shader_info;
+    shader_info.baseConstSvs = context.global_base_uniforms;
+
+    auto node = std::make_shared<SceneNode>();
+    node->SetName("__bloom_" + wpmat.shader);
+    node->SetCamera("effect");
+    if (! LoadMaterial(*context.vfs,
+                       wpmat,
+                       context.scene.get(),
+                       node.get(),
+                       &material,
+                       &sv_data,
+                       &shader_info)) {
+        LOG_ERROR("load bloom material '%s' failed", material_path.c_str());
+        return std::nullopt;
+    }
+    LoadConstvalue(material, wpmat, shader_info);
+
+    auto mesh = std::make_shared<SceneMesh>();
+    mesh->ChangeMeshDataFrom(context.scene->default_effect_mesh);
+    mesh->AddMaterial(std::move(material));
+    node->AddMesh(std::move(mesh));
+    return StagedPostProcessNode {
+        .node              = std::move(node),
+        .shader_value_data = std::move(sv_data),
+        .material          = std::move(wpmat),
+        .shader_info       = std::move(shader_info),
+    };
+}
+
+void BuildBloomPostProcess(ParseContext& context, const wpscene::WPScene& sc) {
+    if (! sc.general.bloom || sc.general.hdr) return;
+
+    const auto render_width =
+        std::max(1, static_cast<i32>(context.scene->cameras.at("global")->Width()));
+    const auto render_height =
+        std::max(1, static_cast<i32>(context.scene->cameras.at("global")->Height()));
+
+    BloomRenderTargetRollback bloom_render_target_rollback(*context.scene);
+    AddScreenRenderTarget(*context.scene, "_rt_bloom_mip1", render_width, render_height, 0.25);
+    AddScreenRenderTarget(*context.scene, "_rt_bloom_mip2", render_width, render_height, 0.125);
+    AddScreenRenderTarget(*context.scene, "_rt_bloom_combine", render_width, render_height, 1.0);
+
+    auto bloom  = std::make_shared<ScenePostProcess>();
+    bloom->name = "__bloom";
+
+    auto downsample_quarter = BuildPostProcessNode(context,
+                                                   "materials/util/downsample_quarter_bloom.json",
+                                                   { SpecTex_Default.data() },
+                                                   sc.general);
+    auto downsample_eighth  = BuildPostProcessNode(
+        context, "materials/util/downsample_eighth_blur_v.json", { "_rt_bloom_mip1" }, sc.general);
+    auto blur_horizontal = BuildPostProcessNode(
+        context, "materials/util/blur_h_bloom.json", { "_rt_bloom_mip2" }, sc.general);
+    auto combine = BuildPostProcessNode(context,
+                                        "materials/util/combine_ldr.json",
+                                        { SpecTex_Default.data(), "_rt_bloom_mip1" },
+                                        sc.general);
+
+    if (! downsample_quarter.has_value() || ! downsample_eighth.has_value() ||
+        ! blur_horizontal.has_value() || ! combine.has_value()) {
+        return;
+    }
+
+    context.shader_updater->SetNodeData(downsample_quarter->node.get(),
+                                        downsample_quarter->shader_value_data);
+    context.shader_updater->SetNodeData(downsample_eighth->node.get(),
+                                        downsample_eighth->shader_value_data);
+    context.shader_updater->SetNodeData(blur_horizontal->node.get(),
+                                        blur_horizontal->shader_value_data);
+    context.shader_updater->SetNodeData(combine->node.get(), combine->shader_value_data);
+
+    RegisterMaterialConstants(context,
+                              downsample_quarter->node->Mesh()->Material(),
+                              downsample_quarter->material,
+                              downsample_quarter->shader_info);
+    RegisterMaterialConstants(context,
+                              downsample_eighth->node->Mesh()->Material(),
+                              downsample_eighth->material,
+                              downsample_eighth->shader_info);
+    RegisterMaterialConstants(context,
+                              blur_horizontal->node->Mesh()->Material(),
+                              blur_horizontal->material,
+                              blur_horizontal->shader_info);
+    RegisterMaterialConstants(
+        context, combine->node->Mesh()->Material(), combine->material, combine->shader_info);
+
+    bloom->steps.push_back(ScenePostProcessPass {
+        .node   = std::move(downsample_quarter->node),
+        .output = "_rt_bloom_mip1",
+    });
+    bloom->steps.push_back(ScenePostProcessPass {
+        .node   = std::move(downsample_eighth->node),
+        .output = "_rt_bloom_mip2",
+    });
+    bloom->steps.push_back(ScenePostProcessPass {
+        .node   = std::move(blur_horizontal->node),
+        .output = "_rt_bloom_mip1",
+    });
+    bloom->steps.push_back(ScenePostProcessPass {
+        .node   = std::move(combine->node),
+        .output = "_rt_bloom_combine",
+    });
+    bloom->steps.push_back(ScenePostProcessCopy {
+        .src = "_rt_bloom_combine",
+        .dst = SpecTex_Default.data(),
+    });
+    context.scene->post_processes.push_back(std::move(bloom));
+    bloom_render_target_rollback.Commit();
 }
 
 void InitContext(ParseContext& context, fs::VFS& vfs, wpscene::WPScene& sc) {
@@ -2154,6 +2352,8 @@ std::shared_ptr<Scene> WPSceneParser::Parse(const SceneParseRequest& request,
             context.scene->runtime->RegisterSceneScript(script_source, layer_name);
         }
     }
+
+    BuildBloomPostProcess(context, sc);
 
     WPShaderParser::FinalGlslang();
     return context.scene;

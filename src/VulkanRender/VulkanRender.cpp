@@ -532,6 +532,7 @@ void VulkanRender::Impl::executePreparedPasses(RenderingResources& rr) {
                 continue;
             }
 
+            std::array<VkClearValue, 2> clear_values { entry.render.clear_value, VkClearValue {} };
             VkRenderPassBeginInfo pass_begin_info {
                 .sType       = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO,
                 .pNext       = nullptr,
@@ -542,8 +543,8 @@ void VulkanRender::Impl::executePreparedPasses(RenderingResources& rr) {
                         .offset = { 0, 0 },
                         .extent = { entry.render.extent.width, entry.render.extent.height },
                     },
-                .clearValueCount = 1,
-                .pClearValues    = &entry.render.clear_value,
+                .clearValueCount = CustomPassBeginRenderPassClearValueCount(entry.render),
+                .pClearValues    = clear_values.data(),
             };
             rr.command.BeginRenderPass(pass_begin_info, VK_SUBPASS_CONTENTS_INLINE);
 

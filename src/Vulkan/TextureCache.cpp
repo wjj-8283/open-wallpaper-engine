@@ -416,9 +416,18 @@ std::optional<ExImageParameters> CreateExImage(uint32_t width, uint32_t height, 
 inline std::optional<VmaImageParameters>
 CreateImage(const Device& device, VkExtent3D extent, u32 miplevel, VkFormat format,
             VkSamplerCreateInfo sampler_info, VkImageUsageFlags usage,
-            VmaMemoryUsage mem_usage = VMA_MEMORY_USAGE_GPU_ONLY) {
+            VmaMemoryUsage         mem_usage = VMA_MEMORY_USAGE_GPU_ONLY,
+            VkSampleCountFlagBits  samples = VK_SAMPLE_COUNT_1_BIT) {
     VmaImageParameters image;
     do {
+        if (samples != VK_SAMPLE_COUNT_1_BIT) {
+            miplevel = 1;
+            constexpr VkImageUsageFlags removed_msaa_usage =
+                VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
+            usage &= ~removed_msaa_usage;
+            usage |= VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
+        }
+
         VkImageCreateInfo info {
             .sType                 = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
             .pNext                 = nullptr,
@@ -427,7 +436,7 @@ CreateImage(const Device& device, VkExtent3D extent, u32 miplevel, VkFormat form
             .extent                = extent,
             .mipLevels             = miplevel,
             .arrayLayers           = 1,
-            .samples               = VK_SAMPLE_COUNT_1_BIT,
+            .samples               = samples,
             .tiling                = VK_IMAGE_TILING_OPTIMAL,
             .usage                 = usage,
             .sharingMode           = VK_SHARING_MODE_EXCLUSIVE,
@@ -549,6 +558,11 @@ inline VkResult CopyImageData(std::span<const BufferParameters> in_bufs,
     return result;
 }
 } // namespace
+
+VkSampleCountFlagBits vulkan::PlannedTextureSampleCountForGpuAllocation(TextureKey key) {
+    if (key.usage != TexUsage::MSAA_COLOR) return VK_SAMPLE_COUNT_1_BIT;
+    return key.sample_count;
+}
 
 bool TextureCache::ReadbackImageSample(const ImageParameters& image, uint32_t x, uint32_t y,
                                        uint32_t width, uint32_t height,
@@ -704,6 +718,7 @@ std::size_t TextureKey::HashValue(const TextureKey& k) {
     utils::hash_combine(seed, (int)k.usage);
     utils::hash_combine(seed, (int)k.format);
     utils::hash_combine(seed, (int)k.mipmap_level);
+    utils::hash_combine(seed, (int)k.sample_count);
 
     utils::hash_combine(seed, (int)k.sample.wrapS);
     utils::hash_combine(seed, (int)k.sample.wrapT);
@@ -924,6 +939,8 @@ void* TextureCache::GetMetalDeviceHandle(std::string* error) {
 std::optional<VmaImageParameters> TextureCache::CreateTex(TextureKey tex_key) {
     VmaImageParameters image_paras;
     do {
+        const VkSampleCountFlagBits planned_samples =
+            PlannedTextureSampleCountForGpuAllocation(tex_key);
         VkSamplerCreateInfo sam_info = GenSamplerInfo(tex_key);
         VkFormat            format   = ToVkType(tex_key.format);
         VkExtent3D          ext { (u32)tex_key.width, (u32)tex_key.height, 1 };
@@ -935,17 +952,24 @@ std::optional<VmaImageParameters> TextureCache::CreateTex(TextureKey tex_key) {
                             format,
                             sam_info,
                             VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT |
-                                VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT);
+                                VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT,
+                            VMA_MEMORY_USAGE_GPU_ONLY,
+                            planned_samples);
             opt.has_value()) {
             image_paras = std::move(opt.value());
         } else
             break;
 
+        const VkImageLayout final_layout = planned_samples == VK_SAMPLE_COUNT_1_BIT
+                                               ? VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
+                                               : VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+
         if (! m_tex_cmd) allocateCmd();
         TransImgLayout(m_device.graphics_queue().handle,
                        m_tex_cmd,
                        image_paras,
-                       VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+                       final_layout);
+        image_paras.layout = final_layout;
 
         VVK_CHECK_ACT(break, m_device.handle().WaitIdle());
         return image_paras;

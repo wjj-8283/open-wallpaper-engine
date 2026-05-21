@@ -16,6 +16,7 @@
 #include "Project/ProjectProperties.hpp"
 #include "Runtime/DynamicValue.hpp"
 #include "Runtime/SceneRuntimeContext.hpp"
+#include "SpecTexs.hpp"
 #include "WPSceneParser.hpp"
 #include "wpscene/WPImageObject.h"
 #include "wpscene/WPMiscObject.hpp"
@@ -38,8 +39,7 @@ public:
         const auto it = m_files.find(std::string(path));
         if (it == m_files.end()) return nullptr;
         const auto& s = it->second;
-        return std::make_shared<fs::MemBinaryStream>(
-            std::vector<uint8_t>(s.begin(), s.end()));
+        return std::make_shared<fs::MemBinaryStream>(std::vector<uint8_t>(s.begin(), s.end()));
     }
 
     std::shared_ptr<fs::IBinaryStreamW> OpenW(std::string_view) override { return nullptr; }
@@ -80,11 +80,196 @@ void main() {
     EXPECT_TRUE(vfs.Mount("/assets", std::make_unique<MemoryFs>(std::move(files))));
 }
 
+void MountBloomSceneFiles(fs::VFS& vfs) {
+    auto files = std::map<std::string, std::string> {
+        { "/materials/util/downsample_quarter_bloom.json",
+          R"({"passes":[{"blending":"normal","cullmode":"nocull","depthtest":"disabled","depthwrite":"disabled","shader":"bloom_downsample_quarter","textures":["_rt_default"],"constantshadervalues":{"bloomstrength":[9.0],"bloomthreshold":[9.0],"bloomtint":[9.0,9.0,9.0]}}]})" },
+        { "/materials/util/downsample_eighth_blur_v.json",
+          R"({"passes":[{"blending":"normal","cullmode":"nocull","depthtest":"disabled","depthwrite":"disabled","shader":"bloom_blur_v","textures":["_rt_bloom_mip1"]}]})" },
+        { "/materials/util/blur_h_bloom.json",
+          R"({"passes":[{"blending":"normal","cullmode":"nocull","depthtest":"disabled","depthwrite":"disabled","shader":"bloom_blur_h","textures":["_rt_bloom_mip2"]}]})" },
+        { "/materials/util/combine_ldr.json",
+          R"({"passes":[{"blending":"normal","cullmode":"nocull","depthtest":"disabled","depthwrite":"disabled","shader":"bloom_combine_ldr","textures":["_rt_default","_rt_bloom_mip1"]}]})" },
+        { "/shaders/bloom_downsample_quarter.vert",
+          R"(attribute vec3 a_Position;
+attribute vec2 a_TexCoord;
+varying vec2 v_TexCoord;
+void main() {
+  gl_Position = vec4(a_Position, 1.0);
+  v_TexCoord = a_TexCoord;
+}
+)" },
+        { "/shaders/bloom_downsample_quarter.frag",
+          R"(uniform sampler2D g_Texture0;
+uniform float g_BloomStrength; // {"material":"bloomstrength","default":0.0}
+uniform float g_BloomThreshold; // {"material":"bloomthreshold","default":0.0}
+uniform vec3 g_BloomTint; // {"material":"bloomtint","default":"1 1 1"}
+varying vec2 v_TexCoord;
+void main() {
+  gl_FragColor = texture(g_Texture0, v_TexCoord) * g_BloomStrength;
+}
+)" },
+        { "/shaders/bloom_blur_v.vert",
+          R"(attribute vec3 a_Position;
+attribute vec2 a_TexCoord;
+varying vec2 v_TexCoord;
+void main() {
+  gl_Position = vec4(a_Position, 1.0);
+  v_TexCoord = a_TexCoord;
+}
+)" },
+        { "/shaders/bloom_blur_v.frag",
+          R"(uniform sampler2D g_Texture0;
+varying vec2 v_TexCoord;
+void main() {
+  gl_FragColor = texture(g_Texture0, v_TexCoord);
+}
+)" },
+        { "/shaders/bloom_blur_h.vert",
+          R"(attribute vec3 a_Position;
+attribute vec2 a_TexCoord;
+varying vec2 v_TexCoord;
+void main() {
+  gl_Position = vec4(a_Position, 1.0);
+  v_TexCoord = a_TexCoord;
+}
+)" },
+        { "/shaders/bloom_blur_h.frag",
+          R"(uniform sampler2D g_Texture0;
+varying vec2 v_TexCoord;
+void main() {
+  gl_FragColor = texture(g_Texture0, v_TexCoord);
+}
+)" },
+        { "/shaders/bloom_combine_ldr.vert",
+          R"(attribute vec3 a_Position;
+attribute vec2 a_TexCoord;
+varying vec2 v_TexCoord;
+void main() {
+  gl_Position = vec4(a_Position, 1.0);
+  v_TexCoord = a_TexCoord;
+}
+)" },
+        { "/shaders/bloom_combine_ldr.frag",
+          R"(uniform sampler2D g_Texture0;
+uniform sampler2D g_Texture1;
+varying vec2 v_TexCoord;
+void main() {
+  gl_FragColor = texture(g_Texture0, v_TexCoord) + texture(g_Texture1, v_TexCoord);
+}
+)" },
+    };
+    EXPECT_TRUE(vfs.Mount("/assets", std::make_unique<MemoryFs>(std::move(files))));
+}
+
+void MountBrokenBloomSceneFiles(fs::VFS& vfs) {
+    auto files = std::map<std::string, std::string> {
+        { "/materials/util/downsample_quarter_bloom.json",
+          R"({"passes":[{"blending":"normal","cullmode":"nocull","depthtest":"disabled","depthwrite":"disabled","shader":"bloom_downsample_quarter","textures":["_rt_default"]}]})" },
+        { "/materials/util/downsample_eighth_blur_v.json",
+          R"({"passes":[{"blending":"normal","cullmode":"nocull","depthtest":"disabled","depthwrite":"disabled","shader":"bloom_blur_v","textures":["_rt_bloom_mip1"]}]})" },
+        { "/materials/util/blur_h_bloom.json",
+          R"({"passes":[{"blending":"normal","cullmode":"nocull","depthtest":"disabled","depthwrite":"disabled","shader":"bloom_blur_h","textures":["_rt_bloom_mip2"]}]})" },
+        { "/shaders/bloom_downsample_quarter.vert",
+          R"(attribute vec3 a_Position;
+attribute vec2 a_TexCoord;
+varying vec2 v_TexCoord;
+void main() {
+  gl_Position = vec4(a_Position, 1.0);
+  v_TexCoord = a_TexCoord;
+}
+)" },
+        { "/shaders/bloom_downsample_quarter.frag",
+          R"(uniform sampler2D g_Texture0;
+uniform float g_BloomStrength; // {"material":"bloomstrength","default":0.0}
+uniform float g_BloomThreshold; // {"material":"bloomthreshold","default":0.0}
+uniform vec3 g_BloomTint; // {"material":"bloomtint","default":"1 1 1"}
+varying vec2 v_TexCoord;
+void main() {
+  gl_FragColor = texture(g_Texture0, v_TexCoord) * g_BloomStrength;
+}
+)" },
+        { "/shaders/bloom_blur_v.vert",
+          R"(attribute vec3 a_Position;
+attribute vec2 a_TexCoord;
+varying vec2 v_TexCoord;
+void main() {
+  gl_Position = vec4(a_Position, 1.0);
+  v_TexCoord = a_TexCoord;
+}
+)" },
+        { "/shaders/bloom_blur_v.frag",
+          R"(uniform sampler2D g_Texture0;
+varying vec2 v_TexCoord;
+void main() {
+  gl_FragColor = texture(g_Texture0, v_TexCoord);
+}
+)" },
+        { "/shaders/bloom_blur_h.vert",
+          R"(attribute vec3 a_Position;
+attribute vec2 a_TexCoord;
+varying vec2 v_TexCoord;
+void main() {
+  gl_Position = vec4(a_Position, 1.0);
+  v_TexCoord = a_TexCoord;
+}
+)" },
+        { "/shaders/bloom_blur_h.frag",
+          R"(uniform sampler2D g_Texture0;
+varying vec2 v_TexCoord;
+void main() {
+  gl_FragColor = texture(g_Texture0, v_TexCoord);
+}
+)" },
+    };
+    EXPECT_TRUE(vfs.Mount("/assets", std::make_unique<MemoryFs>(std::move(files))));
+}
+
+std::string BloomSceneJson(bool hdr) {
+    return std::string(R"({
+      "camera": {"center":[0,0,0], "eye":[0,0,1], "up":[0,1,0]},
+      "general": {
+        "ambientcolor":[0.2,0.2,0.2], "skylightcolor":[0.3,0.3,0.3],
+        "clearcolor":[0,0,0], "cameraparallax":false,
+        "cameraparallaxamount":0, "cameraparallaxdelay":0,
+        "cameraparallaxmouseinfluence":0, "bloom":true,
+        "bloomstrength":1.5, "bloomthreshold":0.25,
+        "bloomtint":[0.2,0.4,0.6], "hdr":)") +
+           (hdr ? "true" : "false") + R"(,
+        "orthogonalprojection":{"width":640,"height":360}
+      },
+      "objects": []
+    })";
+}
+
+const ScenePostProcessPass* PostProcessPassAt(const ScenePostProcess& post, std::size_t index) {
+    if (index >= post.steps.size()) return nullptr;
+    return std::get_if<ScenePostProcessPass>(&post.steps[index]);
+}
+
+const ScenePostProcessCopy* PostProcessCopyAt(const ScenePostProcess& post, std::size_t index) {
+    if (index >= post.steps.size()) return nullptr;
+    return std::get_if<ScenePostProcessCopy>(&post.steps[index]);
+}
+
+void ExpectTextureResolution(const ScenePostProcessPass& pass, int width, int height) {
+    ASSERT_NE(pass.node, nullptr);
+    ASSERT_NE(pass.node->Mesh(), nullptr);
+    ASSERT_NE(pass.node->Mesh()->Material(), nullptr);
+    const auto& constants = pass.node->Mesh()->Material()->customShader.constValues;
+    ASSERT_TRUE(constants.contains(WE_GLTEX_RESOLUTION_NAMES[0]));
+    const auto& resolution = constants.at(WE_GLTEX_RESOLUTION_NAMES[0]);
+    EXPECT_FLOAT_EQ(resolution[0], static_cast<float>(width));
+    EXPECT_FLOAT_EQ(resolution[1], static_cast<float>(height));
+    EXPECT_FLOAT_EQ(resolution[2], static_cast<float>(width));
+    EXPECT_FLOAT_EQ(resolution[3], static_cast<float>(height));
+}
+
 } // namespace
 
 TEST(SceneSchema, AbsorbsGeneralKeysAndLightConfig) {
     wpscene::WPScene scene;
-    const auto json = nlohmann::json::parse(R"({
+    const auto       json = nlohmann::json::parse(R"({
       "camera": {"center":[0,0,0], "eye":[0,0,1], "up":[0,1,0]},
       "general": {
         "ambientcolor":[0.1,0.2,0.3], "skylightcolor":[0.4,0.5,0.6],
@@ -205,7 +390,7 @@ TEST(SceneSchema, ImageAbsorbsDependenciesInstanceAnimationLayersAndBindings) {
     fs::VFS vfs;
     MountSceneFiles(vfs);
     wpscene::WPImageObject image;
-    const auto json = nlohmann::json::parse(R"({
+    const auto             json = nlohmann::json::parse(R"({
       "image":"image.json", "id":7, "name":"image layer",
       "dependencies":[1,2], "origin":[1,2,3],
       "alpha":{"value":0.5,"animation":{"c0":[{"frame":0,"value":0.5}],"options":{"fps":30}}},
@@ -236,7 +421,7 @@ TEST(SceneSchema, ParticleAbsorbsInstanceOverrideExtrasAndNestedChildren) {
     fs::VFS vfs;
     MountSceneFiles(vfs);
     wpscene::WPParticleObject particle;
-    const auto json = nlohmann::json::parse(R"({
+    const auto                json = nlohmann::json::parse(R"({
       "particle":"particle.json", "id":9, "name":"particles",
       "dependencies":[7],
       "instanceoverride":{"id":5,"alpha":0.5,"count":2.0,"color":[0.1,0.2,0.3]},
@@ -270,7 +455,8 @@ TEST(SceneSchema, AbsorbsTextModelAndCameraObjectKinds) {
       "anchor":"center","maxrows":2,"maxwidth":300,"limitrows":true,
       "limitwidth":true,"limituseellipsis":true,"dependencies":[9],
       "alpha":{"script":"export function update() { return 1; }"}
-    })"), vfs));
+    })"),
+                              vfs));
     EXPECT_EQ(text.text.at("value"), "hello");
     EXPECT_TRUE(text.limituseellipsis);
     EXPECT_TRUE(text.field_bindings.contains("alpha"));
@@ -279,7 +465,8 @@ TEST(SceneSchema, AbsorbsTextModelAndCameraObjectKinds) {
     ASSERT_TRUE(model.FromJson(nlohmann::json::parse(R"({
       "id":2,"model":"model.mdl","attachment":"head","perspective":true,
       "dependencies":[1]
-    })"), vfs));
+    })"),
+                               vfs));
     EXPECT_EQ(model.model, "model.mdl");
     EXPECT_TRUE(model.perspective);
 
@@ -287,7 +474,8 @@ TEST(SceneSchema, AbsorbsTextModelAndCameraObjectKinds) {
     ASSERT_TRUE(camera.FromJson(nlohmann::json::parse(R"({
       "id":3,"camera":"main","path":"camera.json","fov":80,"zoom":1.5,
       "solid":true,"disablepropagation":true
-    })"), vfs));
+    })"),
+                                vfs));
     EXPECT_EQ(camera.camera, "main");
     EXPECT_FLOAT_EQ(camera.zoom, 1.5f);
     EXPECT_TRUE(camera.disablepropagation);
@@ -297,8 +485,8 @@ TEST(SceneSchema, ParserCreatesTextChildWithoutBreakingLayerParents) {
     fs::VFS vfs;
     MountSceneFiles(vfs);
     audio::SoundManager sound_manager;
-    WPSceneParser parser;
-    const std::string scene = R"({
+    WPSceneParser       parser;
+    const std::string   scene = R"({
       "camera": {"center":[0,0,0], "eye":[0,0,1], "up":[0,1,0]},
       "general": {
         "ambientcolor":[0.2,0.2,0.2], "skylightcolor":[0.3,0.3,0.3],
@@ -332,8 +520,8 @@ TEST(SceneSchema, SchemaOnlyObjectPreservesRenderableChildParentTransform) {
     fs::VFS vfs;
     MountSceneFiles(vfs);
     audio::SoundManager sound_manager;
-    WPSceneParser parser;
-    const std::string scene = R"({
+    WPSceneParser       parser;
+    const std::string   scene = R"({
       "camera": {"center":[0,0,0], "eye":[0,0,1], "up":[0,1,0]},
       "general": {
         "ambientcolor":[0.2,0.2,0.2], "skylightcolor":[0.3,0.3,0.3],
@@ -365,6 +553,112 @@ TEST(SceneSchema, SchemaOnlyObjectPreservesRenderableChildParentTransform) {
 
     child->UpdateTrans();
     EXPECT_NEAR(child->ModelTrans()(0, 3), 30.0, 1.0e-5);
+}
+
+TEST(SceneSchema, ParserBuildsLdrBloomPostProcessWhenBloomEnabledWithoutHdr) {
+    fs::VFS vfs;
+    MountBloomSceneFiles(vfs);
+    audio::SoundManager sound_manager;
+    WPSceneParser       parser;
+
+    auto parsed = parser.Parse("ldr-bloom", BloomSceneJson(false), vfs, sound_manager);
+    ASSERT_NE(parsed, nullptr);
+
+    ASSERT_EQ(parsed->post_processes.size(), 1u);
+    ASSERT_NE(parsed->post_processes[0], nullptr);
+    const auto& bloom = *parsed->post_processes[0];
+    EXPECT_EQ(bloom.name, "__bloom");
+    ASSERT_EQ(bloom.steps.size(), 5u);
+
+    const auto* pass0 = PostProcessPassAt(bloom, 0);
+    const auto* pass1 = PostProcessPassAt(bloom, 1);
+    const auto* pass2 = PostProcessPassAt(bloom, 2);
+    const auto* pass3 = PostProcessPassAt(bloom, 3);
+    const auto* copy  = PostProcessCopyAt(bloom, 4);
+    ASSERT_NE(pass0, nullptr);
+    ASSERT_NE(pass1, nullptr);
+    ASSERT_NE(pass2, nullptr);
+    ASSERT_NE(pass3, nullptr);
+    ASSERT_NE(copy, nullptr);
+    EXPECT_EQ(pass0->output, "_rt_bloom_mip1");
+    EXPECT_EQ(pass1->output, "_rt_bloom_mip2");
+    EXPECT_EQ(pass2->output, "_rt_bloom_mip1");
+    EXPECT_EQ(pass3->output, "_rt_bloom_combine");
+    EXPECT_EQ(copy->src, "_rt_bloom_combine");
+    EXPECT_EQ(copy->dst, SpecTex_Default);
+
+    ASSERT_NE(pass0->node, nullptr);
+    ASSERT_NE(pass1->node, nullptr);
+    ASSERT_NE(pass2->node, nullptr);
+    ASSERT_NE(pass3->node, nullptr);
+    ASSERT_NE(pass0->node->Mesh(), nullptr);
+    ASSERT_NE(pass0->node->Mesh()->Material(), nullptr);
+    const auto& constants = pass0->node->Mesh()->Material()->customShader.constValues;
+    ASSERT_TRUE(constants.contains("g_BloomStrength"));
+    ASSERT_TRUE(constants.contains("g_BloomThreshold"));
+    ASSERT_TRUE(constants.contains("g_BloomTint"));
+    EXPECT_FLOAT_EQ(constants.at("g_BloomStrength")[0], 1.5f);
+    EXPECT_FLOAT_EQ(constants.at("g_BloomThreshold")[0], 0.25f);
+    EXPECT_FLOAT_EQ(constants.at("g_BloomTint")[0], 0.2f);
+    EXPECT_FLOAT_EQ(constants.at("g_BloomTint")[1], 0.4f);
+    EXPECT_FLOAT_EQ(constants.at("g_BloomTint")[2], 0.6f);
+
+    ExpectTextureResolution(*pass1, 160, 90);
+    ExpectTextureResolution(*pass2, 80, 45);
+    ExpectTextureResolution(*pass3, 640, 360);
+
+    const auto* default_rt = parsed->FindRenderTarget(SpecTex_Default);
+    const auto* mip1_rt    = parsed->FindRenderTarget("_rt_bloom_mip1");
+    const auto* mip2_rt    = parsed->FindRenderTarget("_rt_bloom_mip2");
+    const auto* combine_rt = parsed->FindRenderTarget("_rt_bloom_combine");
+    ASSERT_NE(default_rt, nullptr);
+    ASSERT_NE(mip1_rt, nullptr);
+    ASSERT_NE(mip2_rt, nullptr);
+    ASSERT_NE(combine_rt, nullptr);
+    EXPECT_TRUE(default_rt->bind.enable);
+    EXPECT_TRUE(default_rt->bind.screen);
+    EXPECT_EQ(default_rt->width, 640);
+    EXPECT_EQ(default_rt->height, 360);
+    EXPECT_TRUE(mip1_rt->bind.enable);
+    EXPECT_TRUE(mip1_rt->bind.screen);
+    EXPECT_DOUBLE_EQ(mip1_rt->bind.scale, 0.25);
+    EXPECT_EQ(mip1_rt->width, 160);
+    EXPECT_EQ(mip1_rt->height, 90);
+    EXPECT_TRUE(mip2_rt->bind.enable);
+    EXPECT_TRUE(mip2_rt->bind.screen);
+    EXPECT_DOUBLE_EQ(mip2_rt->bind.scale, 0.125);
+    EXPECT_EQ(mip2_rt->width, 80);
+    EXPECT_EQ(mip2_rt->height, 45);
+    EXPECT_TRUE(combine_rt->bind.enable);
+    EXPECT_TRUE(combine_rt->bind.screen);
+    EXPECT_DOUBLE_EQ(combine_rt->bind.scale, 1.0);
+    EXPECT_EQ(combine_rt->width, 640);
+    EXPECT_EQ(combine_rt->height, 360);
+}
+
+TEST(SceneSchema, ParserDoesNotBuildLdrBloomPostProcessWhenHdrBloomEnabled) {
+    fs::VFS vfs;
+    MountBloomSceneFiles(vfs);
+    audio::SoundManager sound_manager;
+    WPSceneParser       parser;
+
+    auto parsed = parser.Parse("hdr-bloom", BloomSceneJson(true), vfs, sound_manager);
+    ASSERT_NE(parsed, nullptr);
+    EXPECT_TRUE(parsed->post_processes.empty());
+}
+
+TEST(SceneSchema, ParserDoesNotCommitPartialBloomStateWhenMaterialLoadFails) {
+    fs::VFS vfs;
+    MountBrokenBloomSceneFiles(vfs);
+    audio::SoundManager sound_manager;
+    WPSceneParser       parser;
+
+    auto parsed = parser.Parse("broken-ldr-bloom", BloomSceneJson(false), vfs, sound_manager);
+    ASSERT_NE(parsed, nullptr);
+    EXPECT_TRUE(parsed->post_processes.empty());
+    EXPECT_EQ(parsed->FindRenderTarget("_rt_bloom_mip1"), nullptr);
+    EXPECT_EQ(parsed->FindRenderTarget("_rt_bloom_mip2"), nullptr);
+    EXPECT_EQ(parsed->FindRenderTarget("_rt_bloom_combine"), nullptr);
 }
 
 TEST(SceneSchema, RuntimeProjectPropertyResolutionStillWorks) {

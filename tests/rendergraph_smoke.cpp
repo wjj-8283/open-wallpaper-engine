@@ -341,6 +341,69 @@ void forceClearDoesNotChangeDefaultOutputPreservation() {
     assert(second_pass->desc().preserve_target_contents);
 }
 
+void renderTargetSampleCountPropagatesToCustomPassDesc() {
+    Scene scene;
+    installDefaultTargets(scene);
+    scene.renderTargets["_rt_msaa_scaffold"] = SceneRenderTarget {
+        .width        = 64,
+        .height       = 64,
+        .allowReuse   = true,
+        .sample_count = 4,
+    };
+
+    auto writer = makeNode("msaa_scaffold_writer");
+    scene.sceneGraph->AppendChild(writer);
+
+    auto camera = std::make_shared<SceneCamera>(64, 64, 0.01f, 100.0f);
+    camera->AttatchImgEffect(std::make_shared<SceneImageEffectLayer>(
+        writer.get(),
+        64.0f,
+        64.0f,
+        "_rt_msaa_scaffold",
+        "_rt_unused"));
+    writer->SetCamera("msaa_scaffold_camera");
+    scene.cameras["msaa_scaffold_camera"] = camera;
+
+    const auto graph  = wallpaper::sceneToRenderGraph(scene);
+    const auto passes = graphPasses(*graph);
+
+    const auto* pass = findCustomPass(passes, "msaa_scaffold_writer");
+    assert(pass->desc().output == "_rt_msaa_scaffold");
+    assert(pass->desc().sample_count == VK_SAMPLE_COUNT_4_BIT);
+}
+
+void copyWrittenMsaaTargetsPreserveWithSingleSamplePasses() {
+    Scene scene;
+    installDefaultTargets(scene);
+    scene.renderTargets["_rt_msaa_after_copy"] = SceneRenderTarget {
+        .width        = 64,
+        .height       = 64,
+        .allowReuse   = true,
+        .sample_count = 4,
+    };
+
+    auto writer = makeNode("msaa_after_copy_writer");
+    auto post   = std::make_shared<wallpaper::ScenePostProcess>();
+    post->name  = "msaa_after_copy_post";
+    post->steps.push_back(wallpaper::ScenePostProcessCopy {
+        .src = std::string(SpecTex_Default),
+        .dst = "_rt_msaa_after_copy",
+    });
+    post->steps.push_back(wallpaper::ScenePostProcessPass {
+        .node   = writer,
+        .output = "_rt_msaa_after_copy",
+    });
+    scene.post_processes.push_back(post);
+
+    const auto graph  = wallpaper::sceneToRenderGraph(scene);
+    const auto passes = graphPasses(*graph);
+
+    const auto* pass = findCustomPass(passes, "msaa_after_copy_writer");
+    assert(pass->desc().output == "_rt_msaa_after_copy");
+    assert(pass->desc().preserve_target_contents);
+    assert(pass->desc().sample_count == VK_SAMPLE_COUNT_1_BIT);
+}
+
 void defaultOutputUsesSceneClearEnabledWhileNonDefaultWritesAlpha() {
     Scene scene;
     installDefaultTargets(scene);
@@ -394,6 +457,145 @@ void defaultOutputUsesSceneClearEnabledWhileNonDefaultWritesAlpha() {
     assert(clear_pass->desc().clear_on_first_use);
     assert(!clear_pass->desc().write_alpha);
 }
+
+void postProcessesAppendPassesAndCopiesAfterSceneGraph() {
+    Scene scene;
+    installDefaultTargets(scene);
+    scene.renderTargets["_rt_post_pass"] = SceneRenderTarget {
+        .width      = 64,
+        .height     = 64,
+        .allowReuse = true,
+    };
+    scene.renderTargets["_rt_post_copy"] = SceneRenderTarget {
+        .width      = 64,
+        .height     = 64,
+        .allowReuse = true,
+    };
+
+    auto scene_node = makeNode("main_scene_writer");
+    scene.sceneGraph->AppendChild(scene_node);
+
+    auto post_node = makeNode("post_process_writer", { SpecTex_Default.data() });
+    auto post      = std::make_shared<wallpaper::ScenePostProcess>();
+    post->name     = "test_post_process";
+    post->steps.push_back(wallpaper::ScenePostProcessPass {
+        .node   = post_node,
+        .output = "_rt_post_pass",
+    });
+    post->steps.push_back(wallpaper::ScenePostProcessCopy {
+        .src = "_rt_post_pass",
+        .dst = "_rt_post_copy",
+    });
+    scene.post_processes.push_back(post);
+
+    const auto graph  = wallpaper::sceneToRenderGraph(scene);
+    const auto passes = graphPasses(*graph);
+
+    const auto scene_index = findPassIndex(passes, "main_scene_writer");
+    const auto post_index  = findPassIndex(passes, "post_process_writer");
+    const auto copy_it     = std::find_if(passes.begin(), passes.end(), [](const auto& pass) {
+        return pass.copy != nullptr && pass.copy->desc().src == "_rt_post_pass"
+            && pass.copy->desc().dst == "_rt_post_copy";
+    });
+    assert(copy_it != passes.end());
+    const auto copy_index = static_cast<size_t>(std::distance(passes.begin(), copy_it));
+
+    assert(scene_index < post_index);
+    assert(post_index < copy_index);
+
+    const auto* post_pass = findCustomPass(passes, "post_process_writer");
+    assert(post_pass->desc().output == "_rt_post_pass");
+    assert(copy_it->copy->desc().src == "_rt_post_pass");
+    assert(copy_it->copy->desc().dst == "_rt_post_copy");
+}
+
+void nullPostProcessPassNodesAreSkipped() {
+    Scene scene;
+    installDefaultTargets(scene);
+    scene.renderTargets["_rt_after_null_pass"] = SceneRenderTarget {
+        .width      = 64,
+        .height     = 64,
+        .allowReuse = true,
+    };
+    scene.renderTargets["_rt_after_null_copy"] = SceneRenderTarget {
+        .width      = 64,
+        .height     = 64,
+        .allowReuse = true,
+    };
+
+    auto post_node = makeNode("post_after_null_pass");
+    auto post      = std::make_shared<wallpaper::ScenePostProcess>();
+    post->name     = "null_pass_guard";
+    post->steps.push_back(wallpaper::ScenePostProcessPass {
+        .node   = nullptr,
+        .output = "_rt_ignored_null_pass",
+    });
+    post->steps.push_back(wallpaper::ScenePostProcessPass {
+        .node   = post_node,
+        .output = "_rt_after_null_pass",
+    });
+    post->steps.push_back(wallpaper::ScenePostProcessCopy {
+        .src = "_rt_after_null_pass",
+        .dst = "_rt_after_null_copy",
+    });
+    scene.post_processes.push_back(post);
+
+    const auto graph  = wallpaper::sceneToRenderGraph(scene);
+    const auto passes = graphPasses(*graph);
+
+    const auto* post_pass = findCustomPass(passes, "post_after_null_pass");
+    assert(post_pass->desc().output == "_rt_after_null_pass");
+    assert(std::any_of(passes.begin(), passes.end(), [](const auto& pass) {
+        return pass.copy != nullptr && pass.copy->desc().src == "_rt_after_null_pass"
+            && pass.copy->desc().dst == "_rt_after_null_copy";
+    }));
+}
+
+void postProcessCopyStepsResolveRenderTargetAliases() {
+    Scene scene;
+    installDefaultTargets(scene);
+    scene.renderTargets["_rt_alias_resolved_src"] = SceneRenderTarget {
+        .width      = 64,
+        .height     = 64,
+        .allowReuse = true,
+    };
+    scene.renderTargets["_rt_alias_resolved_dst"] = SceneRenderTarget {
+        .width      = 64,
+        .height     = 64,
+        .allowReuse = true,
+    };
+    scene.renderTargetAliases["_alias_post_src"] = "_rt_alias_resolved_src";
+    scene.renderTargetAliases["_alias_post_dst"] = "_rt_alias_resolved_dst";
+
+    auto post_node = makeNode("alias_post_writer");
+    auto post      = std::make_shared<wallpaper::ScenePostProcess>();
+    post->name     = "alias_post_process";
+    post->steps.push_back(wallpaper::ScenePostProcessPass {
+        .node   = post_node,
+        .output = "_alias_post_src",
+    });
+    post->steps.push_back(wallpaper::ScenePostProcessCopy {
+        .src = "_alias_post_src",
+        .dst = "_alias_post_dst",
+    });
+    scene.post_processes.push_back(post);
+
+    const auto graph  = wallpaper::sceneToRenderGraph(scene);
+    const auto passes = graphPasses(*graph);
+
+    const auto* post_pass = findCustomPass(passes, "alias_post_writer");
+    assert(post_pass->desc().output == "_rt_alias_resolved_src");
+
+    const auto copy_it = std::find_if(passes.begin(), passes.end(), [](const auto& pass) {
+        return pass.copy != nullptr && pass.copy->desc().src == "_rt_alias_resolved_src"
+            && pass.copy->desc().dst == "_rt_alias_resolved_dst";
+    });
+    assert(copy_it != passes.end());
+
+    const auto post_index = findPassIndex(passes, "alias_post_writer");
+    const auto copy_index = static_cast<size_t>(std::distance(passes.begin(), copy_it));
+    assert(post_index < copy_index);
+}
 } // namespace
 
 int main() {
@@ -403,6 +605,11 @@ int main() {
     reusableNonDefaultTargetClearsOnlyOnFirstWriter();
     forceClearReusableTargetClearsEveryWriter();
     forceClearDoesNotChangeDefaultOutputPreservation();
+    renderTargetSampleCountPropagatesToCustomPassDesc();
+    copyWrittenMsaaTargetsPreserveWithSingleSamplePasses();
     defaultOutputUsesSceneClearEnabledWhileNonDefaultWritesAlpha();
+    postProcessesAppendPassesAndCopiesAfterSceneGraph();
+    nullPostProcessPassNodesAreSkipped();
+    postProcessCopyStepsResolveRenderTargetAliases();
     return 0;
 }

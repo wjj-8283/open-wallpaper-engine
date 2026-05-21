@@ -49,6 +49,8 @@ public:
     GraphicsPipeline& addInputAttributeDescription(std::span<const VkVertexInputAttributeDescription>);
     GraphicsPipeline& addInputBindingDescription(std::span<const VkVertexInputBindingDescription>);
     GraphicsPipeline& setTopology(VkPrimitiveTopology);
+    GraphicsPipeline& setSampleCount(VkSampleCountFlagBits);
+    VkSampleCountFlagBits sampleCount() const { return multisample.rasterizationSamples; }
 
 private:
     vvk::RenderPass m_pass;

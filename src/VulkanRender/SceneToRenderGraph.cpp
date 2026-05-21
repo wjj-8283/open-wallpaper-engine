@@ -6,10 +6,13 @@
 #include "Utils/Logging.h"
 #include "Core/MapSet.hpp"
 
+#include "Vulkan/SampleCount.hpp"
 #include "VulkanRender/AllPasses.hpp"
 
 #include <cstdlib>
 #include <sstream>
+#include <type_traits>
+#include <variant>
 
 using namespace wallpaper;
 namespace wallpaper::rg
@@ -372,6 +375,32 @@ std::unique_ptr<rg::RenderGraph> wallpaper::sceneToRenderGraph(Scene& scene) {
     };
     build_graph(scene.sceneGraph.get());
 
+    for (const auto& post_process : scene.post_processes) {
+        if (post_process == nullptr) continue;
+        for (const auto& step : post_process->steps) {
+            std::visit(
+                [&extra](const auto& post_step) {
+                    using Step = std::decay_t<decltype(post_step)>;
+                    if constexpr (std::is_same_v<Step, ScenePostProcessPass>) {
+                        if (post_step.node == nullptr) return;
+                        ToGraphPass(
+                            post_step.node.get(),
+                            post_step.output,
+                            post_step.node->ID(),
+                            extra);
+                    } else if constexpr (std::is_same_v<Step, ScenePostProcessCopy>) {
+                        const auto src = extra.scene->ResolveRenderTargetName(post_step.src);
+                        const auto dst = extra.scene->ResolveRenderTargetName(post_step.dst);
+                        rg::addCopyPass(
+                            *extra.rgraph,
+                            rg::createTexDesc(src),
+                            rg::createTexDesc(dst));
+                    }
+                },
+                step);
+        }
+    }
+
     for (auto& info : extra.link_info) {
         if (! exists(extra.id_link_map, info.link_id)) {
             LOG_ERROR("link tex %d not found", info.link_id);
@@ -404,11 +433,14 @@ std::unique_ptr<rg::RenderGraph> wallpaper::sceneToRenderGraph(Scene& scene) {
     }
 
     Set<std::string> written_targets {};
+    Set<std::string> transfer_written_targets {};
     for (const auto node_id : rgraph->topologicalOrder()) {
         if (auto* copy_pass = dynamic_cast<vulkan::CopyPass*>(rgraph->getPass(node_id));
             copy_pass != nullptr) {
-            if (!copy_pass->desc().dst.empty()) {
-                written_targets.insert(copy_pass->desc().dst);
+            const auto copy_dst = scene.ResolveRenderTargetName(copy_pass->desc().dst);
+            if (!copy_dst.empty()) {
+                written_targets.insert(copy_dst);
+                transfer_written_targets.insert(copy_dst);
             }
             continue;
         }
@@ -421,16 +453,25 @@ std::unique_ptr<rg::RenderGraph> wallpaper::sceneToRenderGraph(Scene& scene) {
         const auto render_target = scene.FindRenderTarget(desc.output);
         const bool force_clear =
             desc.output != SpecTex_Default && render_target != nullptr && render_target->forceClear;
+        desc.sample_count = render_target != nullptr
+                                ? vulkan::SampleCountFromValue(render_target->sample_count)
+                                : VK_SAMPLE_COUNT_1_BIT;
 
         const bool first_writer =
             !desc.output.empty() && written_targets.insert(desc.output).second;
         if (!first_writer && !force_clear) {
             desc.clear_on_first_use = false;
             desc.preserve_target_contents = true;
+            if (transfer_written_targets.find(desc.output) != transfer_written_targets.end()) {
+                desc.sample_count = VK_SAMPLE_COUNT_1_BIT;
+            }
             continue;
         }
 
         desc.preserve_target_contents = false;
+        if (!desc.output.empty()) {
+            transfer_written_targets.erase(desc.output);
+        }
         if (desc.output == SpecTex_Default) {
             desc.clear_on_first_use = scene.clearEnabled;
             continue;

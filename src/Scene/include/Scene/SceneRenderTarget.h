@@ -25,5 +25,6 @@ struct SceneRenderTarget {
                            TextureFilter::LINEAR,
                            TextureFilter::LINEAR };
     Bind          bind {};
+    uint32_t      sample_count { 1 };
 };
 } // namespace wallpaper

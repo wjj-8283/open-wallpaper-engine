@@ -1,6 +1,10 @@
 #pragma once
+#include <memory>
+#include <string>
 #include <unordered_map>
 #include <string_view>
+#include <variant>
+#include <vector>
 
 #include "SceneTexture.h"
 #include "SceneRenderTarget.h"
@@ -15,6 +19,23 @@ class ParticleSystem;
 class IShaderValueUpdater;
 class IImageParser;
 class SceneRuntimeContext;
+
+struct ScenePostProcessPass {
+    std::shared_ptr<SceneNode> node;
+    std::string                output;
+};
+
+struct ScenePostProcessCopy {
+    std::string src;
+    std::string dst;
+};
+
+struct ScenePostProcess {
+    using Step = std::variant<ScenePostProcessPass, ScenePostProcessCopy>;
+
+    std::string       name;
+    std::vector<Step> steps;
+};
 
 namespace fs
 {
@@ -35,6 +56,7 @@ public:
     std::vector<std::unique_ptr<SceneLight>> lights;
 
     std::shared_ptr<SceneNode>           sceneGraph;
+    std::vector<std::shared_ptr<ScenePostProcess>> post_processes;
     std::unique_ptr<IShaderValueUpdater> shaderValueUpdater;
     std::unique_ptr<IImageParser>        imageParser;
     std::unique_ptr<SceneRuntimeContext> runtime;

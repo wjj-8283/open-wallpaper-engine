@@ -1,5 +1,6 @@
 #pragma once
 #include "Vulkan/Instance.hpp"
+#include "Vulkan/SampleCount.hpp"
 #include "Type.hpp"
 #include "Vulkan/TextureCache.hpp"
 #include "Scene/SceneRenderTarget.h"
@@ -55,6 +56,12 @@ inline VkClearValue ResolveAttachmentClearValue(bool scene_output,
     return VkClearValue { .color = { 0.0f, 0.0f, 0.0f, 0.0f } };
 }
 
+inline VkSampleCountFlagBits
+ResolveCustomPassRenderTargetSampleCount(std::uint32_t requested_sample_count,
+                                         VkSampleCountFlags supported_color_samples) {
+    return ResolveSampleCount(requested_sample_count, supported_color_samples);
+}
+
 inline void SetAttachmentLoadOp(BlendMode bm, VkAttachmentLoadOp& load_op) {
     switch (bm) {
     case BlendMode::Disable:
@@ -73,7 +80,17 @@ inline TextureKey ToTexKey(wallpaper::SceneRenderTarget rt) {
         .format       = wallpaper::TextureFormat::RGBA8,
         .sample       = rt.sample,
         .mipmap_level = rt.mipmap_level,
+        .sample_count = SampleCountFromValue(rt.sample_count),
     };
+}
+
+inline TextureKey ToTexKeyMsaa(wallpaper::SceneRenderTarget rt,
+                               VkSampleCountFlagBits        sample_count) {
+    auto key          = ToTexKey(rt);
+    key.usage         = TexUsage::MSAA_COLOR;
+    key.mipmap_level  = 1;
+    key.sample_count  = sample_count;
+    return key;
 }
 } // namespace vulkan
 } // namespace wallpaper

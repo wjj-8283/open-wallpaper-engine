@@ -28,7 +28,8 @@ VkSamplerCreateInfo  GenRenderTargetSamplerInfo();
 enum class TexUsage
 {
     COLOR,
-    DEPTH
+    DEPTH,
+    MSAA_COLOR,
 };
 
 using TexHash = std::size_t;
@@ -61,9 +62,14 @@ struct TextureKey {
     TextureFormat format;
     TextureSample sample;
     uint          mipmap_level { 1 };
+    VkSampleCountFlagBits sample_count { VK_SAMPLE_COUNT_1_BIT };
 
     static TexHash HashValue(const TextureKey&);
 };
+
+// CPU-side planning only. Descriptor-visible color textures stay single-sampled;
+// MSAA_COLOR is the private render-pass color sidecar resolved into COLOR.
+VkSampleCountFlagBits PlannedTextureSampleCountForGpuAllocation(TextureKey key);
 
 class TextureCache : NoCopy, NoMove {
 public:
