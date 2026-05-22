@@ -3,6 +3,7 @@
 #include "Particle/ParticleModify.h"
 #include "Particle/ParticleSystem.h"
 #include "Scene/Scene.h"
+#include "Scene/SceneNode.h"
 #include "WPParticleParser.hpp"
 #include "wpscene/WPParticleObject.h"
 
@@ -211,6 +212,41 @@ TEST(ParticleMouseControlpoint, MouseControlpointUpdatesEmitterOrigin) {
 
     EXPECT_DOUBLE_EQ(controlpoints[0].offset.x(), 151.0);
     EXPECT_DOUBLE_EQ(controlpoints[0].offset.y(), 77.0);
+    EXPECT_DOUBLE_EQ(controlpoints[0].offset.z(), 3.0);
+}
+
+TEST(ParticleMouseControlpoint, MouseControlpointUsesOwnerNodeLocalSpace) {
+    Scene scene;
+    scene.ortho[0]        = 200;
+    scene.ortho[1]        = 100;
+    scene.frameTime       = 1.0;
+    scene.pointerPosition = { 0.75f, 0.25f };
+
+    auto node = std::make_shared<SceneNode>();
+    node->SetTranslate(Eigen::Vector3f(100.0f, 50.0f, 0.0f));
+    node->SetScale(Eigen::Vector3f(2.0f, 1.0f, 1.0f));
+
+    auto              mesh = std::make_shared<SceneMesh>(true);
+    ParticleSystem    system(scene);
+    ParticleSubSystem subsystem(system,
+                                mesh,
+                                8,
+                                1.0,
+                                1,
+                                1.0,
+                                ParticleSubSystem::SpawnType::STATIC,
+                                [](const Particle&, const ParticleRawGenSpec&) {
+                                });
+    subsystem.SetOwnerNode(node);
+    auto              controlpoints = subsystem.Controlpoints();
+    controlpoints[0].link_mouse     = true;
+    controlpoints[0].base_offset    = Eigen::Vector3d(1.0, 2.0, 3.0);
+    controlpoints[0].offset         = controlpoints[0].base_offset;
+
+    subsystem.UpdateMouseControlpoints();
+
+    EXPECT_DOUBLE_EQ(controlpoints[0].offset.x(), 26.0);
+    EXPECT_DOUBLE_EQ(controlpoints[0].offset.y(), 27.0);
     EXPECT_DOUBLE_EQ(controlpoints[0].offset.z(), 3.0);
 }
 

@@ -2146,6 +2146,7 @@ void ParseParticleObj(ParseContext& context, wpscene::WPParticleObject& wppartob
                 break;
             }
         });
+    particleSub->SetOwnerNode(spNode);
 
     LoadEmitter(*particleSub, particle_obj, override.count, render_rope, context.scene.get());
     LoadInitializer(*particleSub, particle_obj, override);

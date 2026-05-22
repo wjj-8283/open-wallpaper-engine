@@ -16,6 +16,7 @@ enum class ParticleAnimationMode
 };
 
 class ParticleSystem;
+class SceneNode;
 
 class ParticleInstance : NoCopy, NoMove {
 public:
@@ -77,12 +78,15 @@ public:
     std::span<const ParticleControlpoint> Controlpoints() const;
     std::span<ParticleControlpoint>       Controlpoints();
 
+    void SetOwnerNode(std::weak_ptr<SceneNode> node);
+
     SpawnType Type() const;
     u32       MaxInstanceCount() const;
 
 private:
     ParticleSystem&            m_sys;
     std::shared_ptr<SceneMesh> m_mesh;
+    std::weak_ptr<SceneNode>   m_owner_node;
     //	std::vector<std::unique_ptr<ParticleEmitter>> m_emiters;
     std::vector<ParticleEmittOp> m_emiters;
 

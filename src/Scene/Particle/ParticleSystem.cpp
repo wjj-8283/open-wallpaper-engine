@@ -1,6 +1,7 @@
 #include "ParticleSystem.h"
 #include "Core/Literals.hpp"
 #include "Scene/Scene.h"
+#include "Scene/SceneNode.h"
 #include "ParticleModify.h"
 #include "Scene/SceneMesh.h"
 #include "Core/Random.hpp"
@@ -56,6 +57,10 @@ std::span<const ParticleControlpoint> ParticleSubSystem::Controlpoints() const {
 }
 std::span<ParticleControlpoint> ParticleSubSystem::Controlpoints() { return m_controlpoints; };
 
+void ParticleSubSystem::SetOwnerNode(std::weak_ptr<SceneNode> node) {
+    m_owner_node = std::move(node);
+}
+
 ParticleSubSystem::SpawnType ParticleSubSystem::Type() const { return m_spawn_type; }
 
 u32 ParticleSubSystem::MaxInstanceCount() const { return m_maxcount_instance; };
@@ -67,8 +72,15 @@ void ParticleSubSystem::UpdateMouseControlpoints() {
         (1.0 - static_cast<double>(pointer[1])) * static_cast<double>(m_sys.scene.ortho[1]),
         0.0,
     };
+    Eigen::Vector3d mouse_local = mouse_world;
+    if (auto owner = m_owner_node.lock()) {
+        owner->UpdateTrans();
+        const Eigen::Vector4d local =
+            owner->ModelTrans().inverse() * Eigen::Vector4d(mouse_world.x(), mouse_world.y(), 0.0, 1.0);
+        mouse_local = local.head<3>();
+    }
     for (auto& cp : m_controlpoints) {
-        if (cp.link_mouse) cp.offset = cp.base_offset + mouse_world;
+        if (cp.link_mouse) cp.offset = cp.base_offset + mouse_local;
     }
 }
 
