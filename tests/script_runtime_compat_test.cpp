@@ -602,5 +602,104 @@ TEST(ShaderValueUpdaterCompat, UniformMetadataIsIsolatedPerMaterialSlot) {
     scene.activeCamera = nullptr;
 }
 
+TEST(ShaderValueUpdaterCompat, SlotUniformsUpdateWhenSlotZeroMaterialIsMissing) {
+    Scene scene;
+    scene.runtime = CreateSceneRuntimeContext(SceneRuntimeBootstrap {});
+    ASSERT_NE(scene.runtime, nullptr);
+    scene.runtime->AttachScene(&scene);
+    scene.activeCamera = new SceneCamera(1920, 1080, 0.01f, 1000.0f);
+
+    auto node = std::make_shared<SceneNode>();
+    auto mesh = std::make_shared<SceneMesh>();
+    mesh->MaterialSlots().push_back(nullptr);
+    mesh->AddMaterial(SceneMaterial {});
+    node->AddMesh(mesh);
+
+    WPShaderValueUpdater updater(&scene);
+    updater.InitUniforms(node.get(), 1, [](std::string_view name) {
+        return name == "g_Time";
+    });
+
+    sprite_map_t sprites;
+    std::unordered_map<std::string, ShaderValue> updates;
+    updater.UpdateUniforms(node.get(), 1, sprites, [&](std::string_view name, ShaderValue value) {
+        updates.emplace(std::string(name), std::move(value));
+    });
+
+    EXPECT_TRUE(updates.contains("g_Time"));
+
+    delete scene.activeCamera;
+    scene.activeCamera = nullptr;
+}
+
+TEST(ShaderValueUpdaterCompat, SlotRenderTargetUniformsUseSlotShaderValueData) {
+    Scene scene;
+    scene.runtime = CreateSceneRuntimeContext(SceneRuntimeBootstrap {});
+    ASSERT_NE(scene.runtime, nullptr);
+    scene.runtime->AttachScene(&scene);
+    scene.activeCamera = new SceneCamera(1920, 1080, 0.01f, 1000.0f);
+    scene.renderTargets["_rt_slot_zero"] = SceneRenderTarget {
+        .width        = 64,
+        .height       = 32,
+        .mipmap_level = 2,
+    };
+    scene.renderTargets["_rt_slot_one"] = SceneRenderTarget {
+        .width        = 128,
+        .height       = 96,
+        .mipmap_level = 4,
+    };
+
+    auto node = std::make_shared<SceneNode>();
+    auto mesh = std::make_shared<SceneMesh>();
+    mesh->AddMaterial(SceneMaterial {});
+    mesh->AddMaterial(SceneMaterial {});
+    node->AddMesh(mesh);
+
+    WPShaderValueData slot_zero_data;
+    slot_zero_data.renderTargets.push_back({ 0, "_rt_slot_zero" });
+    WPShaderValueData slot_one_data;
+    slot_one_data.renderTargets.push_back({ 0, "_rt_slot_one" });
+
+    WPShaderValueUpdater updater(&scene);
+    updater.SetNodeData(node.get(), 0, slot_zero_data);
+    updater.SetNodeData(node.get(), 1, slot_one_data);
+    updater.InitUniforms(node.get(), 0, [](std::string_view name) {
+        return name == "g_Texture0Resolution";
+    });
+    updater.InitUniforms(node.get(), 1, [](std::string_view name) {
+        return name == "g_Texture0Resolution";
+    });
+
+    sprite_map_t slot_zero_sprites;
+    std::unordered_map<std::string, ShaderValue> slot_zero_updates;
+    updater.UpdateUniforms(
+        node.get(),
+        0,
+        slot_zero_sprites,
+        [&](std::string_view name, ShaderValue value) {
+            slot_zero_updates.emplace(std::string(name), std::move(value));
+        });
+
+    sprite_map_t slot_one_sprites;
+    std::unordered_map<std::string, ShaderValue> slot_one_updates;
+    updater.UpdateUniforms(
+        node.get(),
+        1,
+        slot_one_sprites,
+        [&](std::string_view name, ShaderValue value) {
+            slot_one_updates.emplace(std::string(name), std::move(value));
+        });
+
+    ASSERT_TRUE(slot_zero_updates.contains("g_Texture0Resolution"));
+    ASSERT_TRUE(slot_one_updates.contains("g_Texture0Resolution"));
+    EXPECT_FLOAT_EQ(slot_zero_updates.at("g_Texture0Resolution")[0], 64.0f);
+    EXPECT_FLOAT_EQ(slot_zero_updates.at("g_Texture0Resolution")[1], 32.0f);
+    EXPECT_FLOAT_EQ(slot_one_updates.at("g_Texture0Resolution")[0], 128.0f);
+    EXPECT_FLOAT_EQ(slot_one_updates.at("g_Texture0Resolution")[1], 96.0f);
+
+    delete scene.activeCamera;
+    scene.activeCamera = nullptr;
+}
+
 } // namespace
 } // namespace wallpaper

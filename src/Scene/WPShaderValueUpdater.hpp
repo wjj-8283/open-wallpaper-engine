@@ -84,6 +84,7 @@ public:
     void SetTexelSize(float x, float y) override;
 
     void SetNodeData(void*, const WPShaderValueData&);
+    void SetNodeData(void*, uint32_t material_slot, const WPShaderValueData&);
     void SetCameraParallax(const WPCameraParallax& value) { m_parallax = value; }
 
     void SetScreenSize(i32 w, i32 h) override { m_screen_size = { (float)w, (float)h }; }
@@ -103,7 +104,7 @@ private:
 
     std::array<float, 2> m_screen_size { 1920, 1080 };
 
-    Map<void*, WPShaderValueData>            m_nodeDataMap;
+    Map<void*, Map<uint32_t, WPShaderValueData>> m_nodeDataMap;
     Map<void*, Map<uint32_t, WPUniformInfo>> m_nodeUniformInfoMap;
 };
 } // namespace wallpaper

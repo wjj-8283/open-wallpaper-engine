@@ -19,6 +19,7 @@
 #include "Runtime/DynamicValue.hpp"
 #include "Runtime/SceneRuntimeContext.hpp"
 #include "SpecTexs.hpp"
+#include "WPShaderValueUpdater.hpp"
 #include "WPSceneParser.hpp"
 #include "wpscene/WPImageObject.h"
 #include "wpscene/WPMiscObject.hpp"
@@ -84,6 +85,7 @@ private:
 };
 
 constexpr uint32_t kSceneTestSkinUvFlag = 0x00800000u | 0x01000000u | 0x00000008u;
+constexpr uint32_t kSceneTestVideoFlag = 1u << 5;
 
 void WritePuppetVertex(Bytes& b, float x, float y, float u, uint32_t bone = 0) {
     b.F32(x);
@@ -198,6 +200,29 @@ std::string BuildLegacySingleMeshPuppetMdlFixture() {
     return b.TakeString();
 }
 
+std::string BuildVideoTexFixture() {
+    Bytes b;
+    b.Stamp("TEXV", 5);
+    b.Stamp("TEXI", 1);
+    b.I32(0);
+    b.U32(kSceneTestVideoFlag);
+    b.I32(1);
+    b.I32(1);
+    b.I32(1);
+    b.I32(1);
+    b.I32(0);
+    b.Stamp("TEXB", 3);
+    b.I32(1);
+    b.I32(static_cast<int32_t>(ImageType::UNKNOWN));
+    b.I32(1);
+    b.I32(1);
+    b.I32(1);
+    b.I32(0);
+    b.I32(0);
+    b.I32(0);
+    return b.TakeString();
+}
+
 void MountSceneFiles(fs::VFS& vfs) {
     auto files = std::map<std::string, std::string> {
         { "/image.json", R"({"width":64,"height":32,"material":"mat.json"})" },
@@ -235,6 +260,18 @@ std::string PuppetMaterialJson(std::string_view shader,
     return std::string(R"({"passes":[{"blending":"translucent","cullmode":"nocull",)"
                        R"("depthtest":"disabled","depthwrite":"disabled","shader":")") +
            std::string(shader) + R"(","textures":[")" + std::string(texture) + R"("]}]})";
+}
+
+std::string PuppetMaterialJson(std::string_view                        shader,
+                               std::initializer_list<std::string_view> textures) {
+    std::string texture_json;
+    for (const auto texture : textures) {
+        if (! texture_json.empty()) texture_json += ",";
+        texture_json += "\"" + std::string(texture) + "\"";
+    }
+    return std::string(R"({"passes":[{"blending":"translucent","cullmode":"nocull",)"
+                       R"("depthtest":"disabled","depthwrite":"disabled","shader":")") +
+           std::string(shader) + R"(","textures":[)" + texture_json + R"(]}]})";
 }
 
 void AddPuppetImageSceneFiles(std::map<std::string, std::string>& files,
@@ -300,6 +337,55 @@ void main() {
     files["/materials/base.tex.tex"] = "";
     files["/materials/head.tex.tex"] = "";
     files["/materials/eyes.tex.tex"] = "";
+}
+
+void AddPuppetSlotRenderTargetSceneFiles(std::map<std::string, std::string>& files) {
+    AddPuppetImageSceneFiles(files);
+    files["/mat/eyes.json"] = PuppetMaterialJson("eyesimage", "_rt_4FrameBuffer");
+}
+
+void AddMultiVideoImageSceneFiles(std::map<std::string, std::string>& files) {
+    files["/image.json"] =
+        R"({"width":64,"height":32,"material":"mat/multi_video.json"})";
+    files["/mat/multi_video.json"] =
+        PuppetMaterialJson("multivideo", { "diffuse.tex", "mask.tex" });
+    files["/shaders/multivideo.vert"] = R"(
+attribute vec3 a_Position;
+attribute vec2 a_TexCoord;
+varying vec2 v_TexCoord;
+void main() {
+  gl_Position = vec4(a_Position, 1.0);
+  v_TexCoord = a_TexCoord;
+}
+)";
+    files["/shaders/multivideo.frag"] = R"(
+uniform sampler2D g_Texture0;
+uniform sampler2D g_Texture1;
+varying vec2 v_TexCoord;
+void main() {
+  gl_FragColor = texture(g_Texture0, v_TexCoord) + texture(g_Texture1, v_TexCoord);
+}
+)";
+    const auto video_tex = BuildVideoTexFixture();
+    files["/materials/diffuse.tex.tex"] = video_tex;
+    files["/materials/mask.tex.tex"] = video_tex;
+}
+
+std::string BasicImageSceneJson() {
+    return R"({
+      "camera": {"center":[0,0,0], "eye":[0,0,1], "up":[0,1,0]},
+      "general": {
+        "ambientcolor":[0.2,0.2,0.2], "skylightcolor":[0.3,0.3,0.3],
+        "clearcolor":[0,0,0], "cameraparallax":false,
+        "cameraparallaxamount":0, "cameraparallaxdelay":0,
+        "cameraparallaxmouseinfluence":0,
+        "orthogonalprojection":{"width":640,"height":360}
+      },
+      "objects": [
+        {"id":310,"name":"video image","image":"image.json",
+         "origin":[0,0,0],"scale":[1,1,1],"angles":[0,0,0],"visible":true}
+      ]
+    })";
 }
 
 std::string BasicPuppetSceneJson(bool dynamic_alpha = false) {
@@ -971,6 +1057,37 @@ TEST(SceneSchema, ParserAppliesPuppetMaterialInfoBeforeLoadingSlotMaterials) {
                     0.6f);
 }
 
+TEST(SceneSchema, ParserRegistersPuppetSlotShaderValueDataByMaterialSlot) {
+    auto files = std::map<std::string, std::string> {};
+    AddPuppetSlotRenderTargetSceneFiles(files);
+    fs::VFS vfs;
+    EXPECT_TRUE(vfs.Mount("/assets", std::make_unique<MemoryFs>(std::move(files))));
+    audio::SoundManager sound_manager;
+    WPSceneParser       parser;
+
+    auto parsed = parser.Parse("puppet-slot-render-targets", BasicPuppetSceneJson(), vfs, sound_manager);
+
+    ASSERT_NE(parsed, nullptr);
+    auto node = FindRootChildByName(*parsed, "puppet image");
+    ASSERT_NE(node, nullptr);
+    ASSERT_NE(parsed->shaderValueUpdater, nullptr);
+    auto* updater = dynamic_cast<WPShaderValueUpdater*>(parsed->shaderValueUpdater.get());
+    ASSERT_NE(updater, nullptr);
+    updater->InitUniforms(node.get(), 1, [](std::string_view name) {
+        return name == "g_Texture0Resolution";
+    });
+
+    sprite_map_t sprites;
+    std::unordered_map<std::string, ShaderValue> updates;
+    updater->UpdateUniforms(node.get(), 1, sprites, [&](std::string_view name, ShaderValue value) {
+        updates.emplace(std::string(name), std::move(value));
+    });
+
+    ASSERT_TRUE(updates.contains("g_Texture0Resolution"));
+    EXPECT_FLOAT_EQ(updates.at("g_Texture0Resolution")[0], 160.0f);
+    EXPECT_FLOAT_EQ(updates.at("g_Texture0Resolution")[1], 90.0f);
+}
+
 TEST(SceneSchema, ParserKeepsLegacyEmptyPuppetMeshSingleMaterialSlotFallback) {
     auto files = std::map<std::string, std::string> {};
     AddPuppetImageSceneFiles(files, true, true);
@@ -1009,6 +1126,41 @@ TEST(SceneSchema, ParserFallsBackWhenPuppetMeshSlotMaterialFailsToLoad) {
     ASSERT_EQ(node->Mesh()->MaterialSlots().size(), 1u);
     ASSERT_NE(node->Mesh()->Material(), nullptr);
     EXPECT_EQ(node->Mesh()->Material()->name, "baseimage");
+    ASSERT_EQ(node->Mesh()->Submeshes().size(), 2u);
+    EXPECT_EQ(node->Mesh()->Submeshes()[0].material_slot, 0u);
+    EXPECT_EQ(node->Mesh()->Submeshes()[1].material_slot, 0u);
+}
+
+TEST(SceneSchema, ParserRegistersEveryVideoTextureInImageMaterialForLayerControls) {
+    auto files = std::map<std::string, std::string> {};
+    AddMultiVideoImageSceneFiles(files);
+    fs::VFS vfs;
+    EXPECT_TRUE(vfs.Mount("/assets", std::make_unique<MemoryFs>(std::move(files))));
+    audio::SoundManager sound_manager;
+    WPSceneParser       parser;
+    ProjectProperties   properties;
+    SceneParseRequest   request {
+          .scene_id = "multi-video-image",
+          .project_properties = &properties,
+    };
+
+    auto parsed = parser.Parse(request, BasicImageSceneJson(), vfs, sound_manager);
+
+    ASSERT_NE(parsed, nullptr);
+    ASSERT_NE(parsed->runtime, nullptr);
+    EXPECT_TRUE(parsed->runtime->PauseNodeVideoTexture("video image"));
+    EXPECT_TRUE(parsed->runtime->SetNodeVideoTextureCurrentTime("video image", 7.5));
+    EXPECT_TRUE(parsed->runtime->SetNodeVideoTextureRate("video image", 0.25f));
+
+    const auto diffuse = parsed->runtime->ResolveVideoPlaybackState("diffuse.tex", 99.0);
+    EXPECT_TRUE(diffuse.paused);
+    EXPECT_FLOAT_EQ(diffuse.rate, 0.25f);
+    EXPECT_DOUBLE_EQ(diffuse.scene_elapsed_seconds, 7.5);
+
+    const auto mask = parsed->runtime->ResolveVideoPlaybackState("mask.tex", 99.0);
+    EXPECT_TRUE(mask.paused);
+    EXPECT_FLOAT_EQ(mask.rate, 0.25f);
+    EXPECT_DOUBLE_EQ(mask.scene_elapsed_seconds, 7.5);
 }
 
 TEST(SceneSchema, RuntimeProjectPropertyResolutionStillWorks) {

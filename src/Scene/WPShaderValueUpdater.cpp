@@ -134,7 +134,7 @@ void WPShaderValueUpdater::UpdateUniforms(SceneNode* pNode, uint32_t material_sl
     if (! camera) return;
     camera->Update();
 
-    auto* material = pNode->Mesh()->Material();
+    auto* material = pNode->Mesh()->MaterialForSlot(material_slot);
     if (! material) return;
     // auto& shadervs = material->customShader.updateValueList;
     // const auto& valueSet = material->customShader.valueSet;
@@ -144,10 +144,16 @@ void WPShaderValueUpdater::UpdateUniforms(SceneNode* pNode, uint32_t material_sl
     assert(exists(slot_infos, material_slot));
     const auto& info = slot_infos.at(material_slot);
 
-    bool hasNodeData = exists(m_nodeDataMap, pNode);
+    WPShaderValueData* nodeData = nullptr;
+    if (exists(m_nodeDataMap, pNode)) {
+        auto& slot_data = m_nodeDataMap.at(pNode);
+        auto        data_it   = slot_data.find(material_slot);
+        if (data_it == slot_data.end()) data_it = slot_data.find(0);
+        if (data_it != slot_data.end()) nodeData = &data_it->second;
+    }
+    bool hasNodeData = nodeData != nullptr;
     if (hasNodeData) {
-        auto& nodeData = m_nodeDataMap.at(pNode);
-        for (const auto& el : nodeData.renderTargets) {
+        for (const auto& el : nodeData->renderTargets) {
             if (m_scene->renderTargets.count(el.second) == 0) continue;
             const auto& rt = m_scene->renderTargets[el.second];
 
@@ -162,8 +168,8 @@ void WPShaderValueUpdater::UpdateUniforms(SceneNode* pNode, uint32_t material_sl
                 updateOp(WE_GLTEX_MIPMAPINFO_NAMES[el.first], (float)rt.mipmap_level);
             }
         }
-        if (nodeData.puppet_layer.hasPuppet() && info.has_BONES) {
-            auto data = nodeData.puppet_layer.genFrame(m_scene->frameTime);
+        if (nodeData->puppet_layer.hasPuppet() && info.has_BONES) {
+            auto data = nodeData->puppet_layer.genFrame(m_scene->frameTime);
             updateOp(G_BONES, std::span<const float> { data[0].data(), data.size() * 16 });
         }
     }
@@ -184,10 +190,9 @@ void WPShaderValueUpdater::UpdateUniforms(SceneNode* pNode, uint32_t material_sl
     if (reqM || reqMVP || reqMI || reqMVPI) {
         Matrix4d modelTrans = pNode->RenderTrans();
         if (hasNodeData && cam_name != "effect") {
-            const auto& nodeData = m_nodeDataMap.at(pNode);
             if (m_parallax.enable) {
                 Vector3f nodePos = pNode->Translate();
-                Vector2f depth(&nodeData.parallaxDepth[0]);
+                Vector2f depth(&nodeData->parallaxDepth[0]);
                 Vector2f ortho { (float)m_scene->ortho[0], (float)m_scene->ortho[1] };
                 // flip mouse y axis
                 Vector2f mouseVec =
@@ -316,7 +321,12 @@ void WPShaderValueUpdater::UpdateUniforms(SceneNode* pNode, uint32_t material_sl
 }
 
 void WPShaderValueUpdater::SetNodeData(void* nodeAddr, const WPShaderValueData& data) {
-    m_nodeDataMap[nodeAddr] = data;
+    SetNodeData(nodeAddr, 0, data);
+}
+
+void WPShaderValueUpdater::SetNodeData(void* nodeAddr, uint32_t material_slot,
+                                       const WPShaderValueData& data) {
+    m_nodeDataMap[nodeAddr][material_slot] = data;
 }
 
 void WPShaderValueUpdater::SetTexelSize(float x, float y) { m_texelSize = { x, y }; }

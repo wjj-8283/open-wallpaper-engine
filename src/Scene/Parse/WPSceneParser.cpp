@@ -1138,7 +1138,12 @@ void RegisterNodeVideoTextureRuntime(ParseContext& context, const wpscene::WPIma
         if (header.durationSeconds > 0.0) {
             context.scene->runtime->SetVideoTextureDuration(texture_name, header.durationSeconds);
         }
-        break;
+    }
+}
+
+void RemapSubmeshesToMaterialSlot(SceneMesh& mesh, uint32_t material_slot) {
+    for (auto& submesh : mesh.Submeshes()) {
+        submesh.material_slot = material_slot;
     }
 }
 
@@ -1739,21 +1744,27 @@ void ParseImageObj(ParseContext& context, wpscene::WPImageObject& img_obj) {
     if (puppet_material_slots.has_value()) {
         for (auto& slot : *puppet_material_slots) {
             mesh.AddMaterial(std::move(slot.material));
-            auto* material_slot = mesh.MaterialForSlot(
-                static_cast<uint32_t>(mesh.MaterialSlots().size() - 1));
+            const auto material_slot_index =
+                static_cast<uint32_t>(mesh.MaterialSlots().size() - 1);
+            auto* material_slot = mesh.MaterialForSlot(material_slot_index);
+            context.shader_updater->SetNodeData(
+                spImgNode.get(), material_slot_index, slot.shader_value_data);
             RegisterMaterialConstants(context, material_slot, slot.source, slot.shader_info);
             registerImageAlphaAnimation(material_slot);
             RegisterNodeVideoTextureRuntime(context, wpimgobj, material_slot);
         }
     } else {
         mesh.AddMaterial(std::move(material));
+        RemapSubmeshesToMaterialSlot(mesh, 0);
         RegisterMaterialConstants(context, spMesh->Material(), wpimgobj.material, shaderInfo);
         registerImageAlphaAnimation(spMesh->Material());
         RegisterNodeVideoTextureRuntime(context, wpimgobj, spMesh->Material());
     }
     spImgNode->AddMesh(spMesh);
 
-    context.shader_updater->SetNodeData(spImgNode.get(), svData);
+    if (! puppet_material_slots.has_value()) {
+        context.shader_updater->SetNodeData(spImgNode.get(), svData);
+    }
     if (hasEffect) {
         auto& scene = *context.scene;
         // currently use addr for unique
@@ -2240,7 +2251,6 @@ void ParseParticleObj(ParseContext& context, wpscene::WPParticleObject& wppartob
             if (texture_iterator == context.scene->textures.end()) continue;
             if (! texture_iterator->second.isVideo) continue;
             context.scene->runtime->RegisterNodeVideoTexture(wppartobj.name, texture_name);
-            break;
         }
     }
     spNode->AddMesh(spMesh);
