@@ -62,13 +62,13 @@ u32 ParticleSubSystem::MaxInstanceCount() const { return m_maxcount_instance; };
 
 void ParticleSubSystem::UpdateMouseControlpoints() {
     const auto            pointer = m_sys.scene.pointerPosition;
-    const Eigen::Vector3d pointer_world {
-        (static_cast<double>(pointer[0]) - 0.5) * static_cast<double>(m_sys.scene.ortho[0]),
-        (0.5 - static_cast<double>(pointer[1])) * static_cast<double>(m_sys.scene.ortho[1]),
+    const Eigen::Vector3d mouse_world {
+        static_cast<double>(pointer[0]) * static_cast<double>(m_sys.scene.ortho[0]),
+        (1.0 - static_cast<double>(pointer[1])) * static_cast<double>(m_sys.scene.ortho[1]),
         0.0,
     };
     for (auto& cp : m_controlpoints) {
-        if (cp.link_mouse) cp.offset = cp.base_offset + pointer_world;
+        if (cp.link_mouse) cp.offset = cp.base_offset + mouse_world;
     }
 }
 

@@ -209,8 +209,8 @@ TEST(ParticleMouseControlpoint, MouseControlpointUpdatesEmitterOrigin) {
 
     subsystem.UpdateMouseControlpoints();
 
-    EXPECT_DOUBLE_EQ(controlpoints[0].offset.x(), 51.0);
-    EXPECT_DOUBLE_EQ(controlpoints[0].offset.y(), 27.0);
+    EXPECT_DOUBLE_EQ(controlpoints[0].offset.x(), 151.0);
+    EXPECT_DOUBLE_EQ(controlpoints[0].offset.y(), 77.0);
     EXPECT_DOUBLE_EQ(controlpoints[0].offset.z(), 3.0);
 }
 
