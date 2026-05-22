@@ -109,6 +109,30 @@ TEST(SceneScriptMediaEventSmoke, VideoPlaybackControlsResolveWrappedState) {
     EXPECT_DOUBLE_EQ(state.scene_elapsed_seconds, 1.5);
 }
 
+TEST(SceneScriptMediaEventSmoke, VideoPlaybackControlsApplyToAllTexturesOnSameNode) {
+    auto runtime = CreateSceneRuntimeContext(SceneRuntimeBootstrap {});
+    ASSERT_NE(runtime, nullptr);
+
+    runtime->RegisterNodeVideoTexture("videoLayer", "textures/diffuse.mp4");
+    runtime->RegisterNodeVideoTexture("videoLayer", "textures/mask.mp4");
+    runtime->SetVideoTextureDuration("textures/diffuse.mp4", 3.0);
+    runtime->SetVideoTextureDuration("textures/mask.mp4", 5.0);
+
+    EXPECT_TRUE(runtime->PauseNodeVideoTexture("videoLayer"));
+    EXPECT_TRUE(runtime->SetNodeVideoTextureCurrentTime("videoLayer", 7.5));
+    EXPECT_TRUE(runtime->SetNodeVideoTextureRate("videoLayer", 0.25f));
+
+    const auto diffuse_state = runtime->ResolveVideoPlaybackState("textures/diffuse.mp4", 99.0);
+    EXPECT_TRUE(diffuse_state.paused);
+    EXPECT_FLOAT_EQ(diffuse_state.rate, 0.25f);
+    EXPECT_DOUBLE_EQ(diffuse_state.scene_elapsed_seconds, 1.5);
+
+    const auto mask_state = runtime->ResolveVideoPlaybackState("textures/mask.mp4", 99.0);
+    EXPECT_TRUE(mask_state.paused);
+    EXPECT_FLOAT_EQ(mask_state.rate, 0.25f);
+    EXPECT_DOUBLE_EQ(mask_state.scene_elapsed_seconds, 2.5);
+}
+
 TEST(SceneScriptMediaEventSmoke, MissingVideoPlaybackUsesFallbackElapsedTime) {
     auto runtime = CreateSceneRuntimeContext(SceneRuntimeBootstrap {});
     ASSERT_NE(runtime, nullptr);

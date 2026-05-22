@@ -11,6 +11,7 @@
 #include "Utils/Logging.h"
 #include "WPSoundParser.hpp"
 
+#include <algorithm>
 #include <cmath>
 #include <filesystem>
 #include <sstream>
@@ -583,7 +584,10 @@ void SceneRuntimeContext::RegisterSceneScript(std::string script_source, std::st
 
 void SceneRuntimeContext::RegisterNodeVideoTexture(std::string name, std::string texture_key) {
     if (name.empty() || texture_key.empty()) return;
-    m_node_video_textures[std::move(name)] = texture_key;
+    auto& texture_keys = m_node_video_textures[name];
+    if (std::find(texture_keys.begin(), texture_keys.end(), texture_key) == texture_keys.end()) {
+        texture_keys.push_back(texture_key);
+    }
     if (! m_video_texture_playback.contains(texture_key)) {
         m_video_texture_playback.emplace(std::move(texture_key), VideoTexturePlaybackBinding {});
     }
@@ -936,39 +940,53 @@ void SceneRuntimeContext::PumpTextLayerCache() {
 }
 
 bool SceneRuntimeContext::NodeHasVideoTexture(std::string_view name) const {
-    return m_node_video_textures.contains(std::string(name));
+    const auto iterator = m_node_video_textures.find(std::string(name));
+    return iterator != m_node_video_textures.end() && ! iterator->second.empty();
 }
 
 bool SceneRuntimeContext::PlayNodeVideoTexture(std::string_view name) {
     const auto iterator = m_node_video_textures.find(std::string(name));
     if (iterator == m_node_video_textures.end()) return false;
-    auto& playback  = m_video_texture_playback[iterator->second];
-    playback.paused = false;
-    return true;
+    bool controlled = false;
+    for (const auto& texture_key : iterator->second) {
+        auto& playback  = m_video_texture_playback[texture_key];
+        playback.paused = false;
+        controlled      = true;
+    }
+    return controlled;
 }
 
 bool SceneRuntimeContext::PauseNodeVideoTexture(std::string_view name) {
     const auto iterator = m_node_video_textures.find(std::string(name));
     if (iterator == m_node_video_textures.end()) return false;
-    auto& playback  = m_video_texture_playback[iterator->second];
-    playback.paused = true;
-    return true;
+    bool controlled = false;
+    for (const auto& texture_key : iterator->second) {
+        auto& playback  = m_video_texture_playback[texture_key];
+        playback.paused = true;
+        controlled      = true;
+    }
+    return controlled;
 }
 
 bool SceneRuntimeContext::SetNodeVideoTextureCurrentTime(std::string_view name, double seconds) {
     const auto iterator = m_node_video_textures.find(std::string(name));
     if (iterator == m_node_video_textures.end()) return false;
-    auto& playback            = m_video_texture_playback[iterator->second];
-    playback.absolute_seconds = playback.duration_seconds > 0.0
-                                    ? WrapSeconds(std::max(0.0, seconds), playback.duration_seconds)
-                                    : std::max(0.0, seconds);
-    return true;
+    bool controlled = false;
+    for (const auto& texture_key : iterator->second) {
+        auto& playback            = m_video_texture_playback[texture_key];
+        playback.absolute_seconds = playback.duration_seconds > 0.0
+                                        ? WrapSeconds(std::max(0.0, seconds),
+                                                      playback.duration_seconds)
+                                        : std::max(0.0, seconds);
+        controlled                = true;
+    }
+    return controlled;
 }
 
 double SceneRuntimeContext::NodeVideoTextureCurrentTime(std::string_view name) const {
     const auto node_iterator = m_node_video_textures.find(std::string(name));
-    if (node_iterator == m_node_video_textures.end()) return 0.0;
-    const auto playback_iterator = m_video_texture_playback.find(node_iterator->second);
+    if (node_iterator == m_node_video_textures.end() || node_iterator->second.empty()) return 0.0;
+    const auto playback_iterator = m_video_texture_playback.find(node_iterator->second.front());
     if (playback_iterator == m_video_texture_playback.end()) return 0.0;
     const auto& playback = playback_iterator->second;
     return playback.duration_seconds > 0.0
@@ -979,23 +997,27 @@ double SceneRuntimeContext::NodeVideoTextureCurrentTime(std::string_view name) c
 bool SceneRuntimeContext::SetNodeVideoTextureRate(std::string_view name, float rate) {
     const auto iterator = m_node_video_textures.find(std::string(name));
     if (iterator == m_node_video_textures.end()) return false;
-    auto& playback = m_video_texture_playback[iterator->second];
-    playback.rate  = std::max(0.0f, rate);
-    return true;
+    bool controlled = false;
+    for (const auto& texture_key : iterator->second) {
+        auto& playback = m_video_texture_playback[texture_key];
+        playback.rate  = std::max(0.0f, rate);
+        controlled     = true;
+    }
+    return controlled;
 }
 
 float SceneRuntimeContext::NodeVideoTextureRate(std::string_view name) const {
     const auto node_iterator = m_node_video_textures.find(std::string(name));
-    if (node_iterator == m_node_video_textures.end()) return 1.0f;
-    const auto playback_iterator = m_video_texture_playback.find(node_iterator->second);
+    if (node_iterator == m_node_video_textures.end() || node_iterator->second.empty()) return 1.0f;
+    const auto playback_iterator = m_video_texture_playback.find(node_iterator->second.front());
     if (playback_iterator == m_video_texture_playback.end()) return 1.0f;
     return playback_iterator->second.rate;
 }
 
 double SceneRuntimeContext::NodeVideoTextureDuration(std::string_view name) const {
     const auto node_iterator = m_node_video_textures.find(std::string(name));
-    if (node_iterator == m_node_video_textures.end()) return 0.0;
-    const auto playback_iterator = m_video_texture_playback.find(node_iterator->second);
+    if (node_iterator == m_node_video_textures.end() || node_iterator->second.empty()) return 0.0;
+    const auto playback_iterator = m_video_texture_playback.find(node_iterator->second.front());
     if (playback_iterator == m_video_texture_playback.end()) return 0.0;
     return playback_iterator->second.duration_seconds;
 }

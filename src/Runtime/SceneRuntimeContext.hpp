@@ -216,7 +216,7 @@ private:
     std::unordered_map<std::string, NodeAlignmentBinding>          m_node_alignment;
     std::unordered_map<std::string, std::string>                   m_node_template_paths;
     std::unordered_map<std::string, LayerTemplateBinding>          m_layer_templates;
-    std::unordered_map<std::string, std::string>                   m_node_video_textures;
+    std::unordered_map<std::string, std::vector<std::string>>      m_node_video_textures;
     std::unordered_map<std::string, VideoTexturePlaybackBinding>   m_video_texture_playback;
     std::unordered_map<std::string, std::weak_ptr<WPSoundStream>>  m_sound_layers;
     std::vector<ScriptedDynamicValue*>                             m_scripted_values;
