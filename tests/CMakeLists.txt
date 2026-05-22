@@ -130,6 +130,27 @@ target_include_directories(shader_cache_metadata_test PRIVATE .)
 target_compile_features(shader_cache_metadata_test PRIVATE cxx_std_20)
 gtest_discover_tests(
     shader_cache_metadata_test
+    TEST_PREFIX shader_cache_metadata_test.
+    PROPERTIES TIMEOUT 30
+    DISCOVERY_TIMEOUT 60
+)
+add_executable(shader_lex_tests shader_lex_tests.cpp)
+target_link_libraries(shader_lex_tests PRIVATE ${PROJECT_NAME} GTest::gtest_main)
+target_include_directories(shader_lex_tests PRIVATE . ${CMAKE_SOURCE_DIR}/src)
+target_compile_features(shader_lex_tests PRIVATE cxx_std_20)
+gtest_discover_tests(
+    shader_lex_tests
+    TEST_PREFIX shader_lex_tests.
+    PROPERTIES TIMEOUT 30
+    DISCOVERY_TIMEOUT 60
+)
+add_executable(wpshader_parse_tests wpshader_parse_tests.cpp)
+target_link_libraries(wpshader_parse_tests PRIVATE ${PROJECT_NAME} wpScene GTest::gtest_main)
+target_include_directories(wpshader_parse_tests PRIVATE . ${CMAKE_SOURCE_DIR}/src)
+target_compile_features(wpshader_parse_tests PRIVATE cxx_std_20)
+gtest_discover_tests(
+    wpshader_parse_tests
+    TEST_PREFIX wpshader_parse_tests.
     PROPERTIES TIMEOUT 30
     DISCOVERY_TIMEOUT 60
 )
@@ -139,6 +160,7 @@ target_include_directories(shader_preprocessor_compat_test PRIVATE .)
 target_compile_features(shader_preprocessor_compat_test PRIVATE cxx_std_20)
 gtest_discover_tests(
     shader_preprocessor_compat_test
+    TEST_PREFIX shader_preprocessor_compat_test.
     PROPERTIES TIMEOUT 30
     DISCOVERY_TIMEOUT 60
 )
@@ -231,8 +253,8 @@ target_include_directories(vulkan_sample_count_smoke PRIVATE
     .
     ${CMAKE_SOURCE_DIR}/src
     ${CMAKE_SOURCE_DIR}/src/Vulkan/include
-    ${CMAKE_SOURCE_DIR}/src/VulkanRender
-    ${CMAKE_SOURCE_DIR}/src/VulkanRender/include
+    ${CMAKE_SOURCE_DIR}/src/Scene/VulkanRender
+    ${CMAKE_SOURCE_DIR}/src/Scene/VulkanRender/include
     ${CMAKE_SOURCE_DIR}/src/Utils/include
     ${CMAKE_SOURCE_DIR}/src/Scene/include
 )
@@ -240,7 +262,7 @@ target_compile_features(vulkan_sample_count_smoke PRIVATE cxx_std_20)
 add_test(NAME vulkan_sample_count_smoke COMMAND vulkan_sample_count_smoke)
 add_executable(rendergraph_smoke rendergraph_smoke.cpp)
 target_link_libraries(rendergraph_smoke PRIVATE ${PROJECT_NAME} wpVulkanRender wpVulkan wpRGraph wpScene)
-target_include_directories(rendergraph_smoke PRIVATE . ${CMAKE_SOURCE_DIR}/src ${CMAKE_SOURCE_DIR}/src/VulkanRender)
+target_include_directories(rendergraph_smoke PRIVATE . ${CMAKE_SOURCE_DIR}/src ${CMAKE_SOURCE_DIR}/src/Scene/VulkanRender)
 target_compile_features(rendergraph_smoke PRIVATE cxx_std_20)
 add_test(NAME rendergraph_smoke COMMAND rendergraph_smoke)
 add_executable(timer_tests timer/frame_timer_test.cpp)

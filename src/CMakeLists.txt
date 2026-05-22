@@ -74,6 +74,8 @@ add_library(
   Scene/Parse/wpscene/WPScene.cpp
   Scene/Parse/wpscene/WPLightObject.cpp
   Scene/Parse/WPParticleParser.cpp
+  Scene/Parse/ShaderLex.cpp
+  Scene/Parse/WPShaderAnnot.cpp
   Scene/Parse/WPShaderParser.cpp
   Shader/ShaderPreprocessor.cpp
   Shader/SceneShaderLegalizer.cpp

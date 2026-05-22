@@ -2,14 +2,9 @@
 
 #include "Fs/VFS.h"
 #include "Utils/Logging.h"
-#include "Utils/String.h"
 #include "Vulkan/ShaderComp.hpp"
-#include "WPJson.hpp"
-#include "wpscene/WPUniform.h"
 
 #include <algorithm>
-#include <charconv>
-#include <nlohmann/json.hpp>
 #include <regex>
 #include <stack>
 #include <string>
@@ -116,118 +111,6 @@ std::string LoadGlslInclude(wallpaper::fs::VFS& vfs, const std::string& input)
 
     output.append(input.substr(pos));
     return output;
-}
-
-void ParseWPShader(
-    std::string_view source,
-    wallpaper::WPShaderInfo* shader_info,
-    std::span<const wallpaper::WPShaderTexInfo> tex_infos)
-{
-    const auto try_parse_inline_json = [](std::string_view input, nlohmann::json* result) {
-        auto parsed = nlohmann::json::parse(input, nullptr, false);
-        if (parsed.is_discarded()) {
-            return false;
-        }
-        *result = std::move(parsed);
-        return true;
-    };
-    auto& combos = shader_info->combos;
-    auto& alias_dict = shader_info->alias;
-    auto& shader_values = shader_info->svs;
-    auto& default_textures = shader_info->defTexs;
-    const idx texture_count = static_cast<idx>(tex_infos.size());
-
-    std::string::size_type pos = 0;
-    std::string::size_type line_end = std::string::npos;
-    while (true) {
-        line_end = source.find_first_of('\n', pos);
-        const auto current_line_end = line_end;
-        const auto line = source.substr(pos, line_end - pos);
-
-        if (line.find("// [COMBO]") != std::string_view::npos) {
-            nlohmann::json combo_json;
-            if (try_parse_inline_json(line.substr(line.find_first_of('{')), &combo_json)) {
-                if (combo_json.contains("combo")) {
-                    std::string name;
-                    int32_t value = 0;
-                    GET_JSON_NAME_VALUE(combo_json, "combo", name);
-                    GET_JSON_NAME_VALUE(combo_json, "default", value);
-                    combos[name] = std::to_string(value);
-                }
-            }
-        } else if (line.find("uniform ") != std::string_view::npos &&
-                   line.find("//") != std::string_view::npos &&
-                   line.find('{') != std::string_view::npos) {
-            nlohmann::json shader_value_json;
-            if (try_parse_inline_json(line.substr(line.find_first_of('{')), &shader_value_json)) {
-                const std::vector<std::string> defines = utils::SpliteString(
-                    std::string(line.substr(0, line.find_first_of(';'))), ' ');
-
-                std::string material;
-                GET_JSON_NAME_VALUE_NOWARN(shader_value_json, "material", material);
-                if (!material.empty()) {
-                    alias_dict[material] = defines.back();
-                }
-
-                std::string name = defines.back();
-                const bool is_texture = name.compare(0, 9, "g_Texture") == 0;
-                if (is_texture) {
-                    wallpaper::wpscene::WPUniformTex uniform_texture;
-                    uniform_texture.FromJson(shader_value_json);
-                    i32 index { 0 };
-                    STRTONUM(name.substr(9), index);
-
-                    if (!uniform_texture.default_.empty()) {
-                        default_textures.push_back({ index, uniform_texture.default_ });
-                    }
-
-                    if (!uniform_texture.combo.empty()) {
-                        combos[uniform_texture.combo] = index >= texture_count ? "0" : "1";
-                    }
-
-                    if (index < texture_count && tex_infos[static_cast<usize>(index)].enabled) {
-                        const auto& components = tex_infos[static_cast<usize>(index)].composEnabled;
-                        const usize count =
-                            std::min(std::size(components), std::size(uniform_texture.components));
-                        for (usize i = 0; i < count; i++) {
-                            if (components[i]) {
-                                combos[uniform_texture.components[i].combo] = "1";
-                            }
-                        }
-                    }
-                } else {
-                    if (shader_value_json.contains("default")) {
-                        const auto value = shader_value_json.at("default");
-                        wallpaper::ShaderValue shader_value;
-                        if (value.is_string()) {
-                            std::vector<float> values;
-                            GET_JSON_VALUE(value, values);
-                            shader_value = std::span<const float>(values);
-                        } else if (value.is_number()) {
-                            shader_value.setSize(1);
-                            GET_JSON_VALUE(value, shader_value[0]);
-                        }
-                        shader_values[name] = shader_value;
-                    }
-                    if (shader_value_json.contains("combo")) {
-                        std::string combo_name;
-                        GET_JSON_NAME_VALUE(shader_value_json, "combo", combo_name);
-                        combos[combo_name] = "1";
-                    }
-                }
-
-                if (!defines.empty() && defines.back()[0] != 'g') {
-                    LOG_INFO("PreShaderSrc User shadervalue not supported");
-                }
-            }
-        }
-
-        if (line.find("void main()") != std::string_view::npos ||
-            current_line_end == std::string_view::npos) {
-            break;
-        }
-        pos = line_end + 1;
-    }
 }
 
 usize FindIncludeInsertPos(const std::string& source)
@@ -832,7 +715,7 @@ void ExtractMetadata(
     WPShaderInfo* shader_info,
     std::span<const WPShaderTexInfo> tex_infos)
 {
-    ParseWPShader(source, shader_info, tex_infos);
+    ParseWPShaderAnnotations(source, shader_info, tex_infos);
 }
 
 std::string MergeExpandedIncludes(IncludeExpansionResult expansion)

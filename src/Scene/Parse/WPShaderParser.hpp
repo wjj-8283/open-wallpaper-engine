@@ -44,6 +44,11 @@ struct WPShaderUnit {
     WPPreprocessorInfo preprocess_info;
 };
 
+void ParseWPShaderAnnotations(
+    std::string_view source,
+    WPShaderInfo* shader_info,
+    std::span<const WPShaderTexInfo> tex_infos);
+
 struct ShaderStartupMetrics {
     uint64_t cache_hits { 0 };
     uint64_t cache_misses { 0 };

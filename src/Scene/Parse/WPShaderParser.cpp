@@ -2,24 +2,18 @@
 
 #include "Fs/IBinaryStream.h"
 #include "Utils/Logging.h"
-#include "WPJson.hpp"
 #include "Shader/SceneShaderLegalizer.hpp"
 #include "Shader/ShaderPreprocessor.hpp"
 
-#include "wpscene/WPUniform.h"
 #include "Fs/VFS.h"
 #include "Utils/Sha.hpp"
-#include "Utils/String.h"
 #include "WPCommon.hpp"
 
 #include "Vulkan/ShaderComp.hpp"
 
-#include <nlohmann/json.hpp>
-
 #include <chrono>
 #include <regex>
 #include <stack>
-#include <charconv>
 #include <string>
 #include <unordered_set>
 
@@ -108,115 +102,6 @@ inline std::string LoadGlslInclude(fs::VFS& vfs, const std::string& input) {
     }
     output.append(input.substr(pos));
     return output;
-}
-
-inline void ParseWPShader(const std::string& src, WPShaderInfo* pWPShaderInfo,
-                          const std::vector<WPShaderTexInfo>& texinfos) {
-    const auto try_parse_inline_json = [](std::string_view source, nlohmann::json* result) {
-        auto parsed = nlohmann::json::parse(source, nullptr, false);
-        if (parsed.is_discarded()) {
-            return false;
-        }
-        *result = std::move(parsed);
-        return true;
-    };
-    auto& combos       = pWPShaderInfo->combos;
-    auto& wpAliasDict  = pWPShaderInfo->alias;
-    auto& shadervalues = pWPShaderInfo->svs;
-    auto& defTexs      = pWPShaderInfo->defTexs;
-    idx   texcount     = std::ssize(texinfos);
-
-    // pos start of line
-    std::string::size_type pos = 0, lineEnd = std::string::npos;
-    while ((lineEnd = src.find_first_of(('\n'), pos)), true) {
-        const auto clineEnd = lineEnd;
-        const auto line     = src.substr(pos, lineEnd - pos);
-
-        /*
-        if(line.find("attribute ") != std::string::npos || line.find("in ") != std::string::npos) {
-            update_pos = true;
-        }
-        */
-        if (line.find("// [COMBO]") != std::string::npos) {
-            nlohmann::json combo_json;
-            if (try_parse_inline_json(line.substr(line.find_first_of('{')), &combo_json)) {
-                if (combo_json.contains("combo")) {
-                    std::string name;
-                    int32_t     value = 0;
-                    GET_JSON_NAME_VALUE(combo_json, "combo", name);
-                    GET_JSON_NAME_VALUE(combo_json, "default", value);
-                    combos[name] = std::to_string(value);
-                }
-            }
-        } else if (line.find("uniform ") != std::string::npos) {
-            if (line.find("// {") != std::string::npos) {
-                nlohmann::json sv_json;
-                if (try_parse_inline_json(line.substr(line.find_first_of('{')), &sv_json)) {
-                    std::vector<std::string> defines =
-                        utils::SpliteString(line.substr(0, line.find_first_of(';')), ' ');
-
-                    std::string material;
-                    GET_JSON_NAME_VALUE_NOWARN(sv_json, "material", material);
-                    if (! material.empty()) wpAliasDict[material] = defines.back();
-
-                    ShaderValue sv;
-                    std::string name  = defines.back();
-                    bool        istex = name.compare(0, 9, "g_Texture") == 0;
-                    if (istex) {
-                        wpscene::WPUniformTex wput;
-                        wput.FromJson(sv_json);
-                        i32 index { 0 };
-                        STRTONUM(name.substr(9), index);
-                        if (! wput.default_.empty()) defTexs.push_back({ index, wput.default_ });
-                        if (! wput.combo.empty()) {
-                            if (index >= texcount)
-                                combos[wput.combo] = "0";
-                            else
-                                combos[wput.combo] = "1";
-                        }
-                        if (index < texcount && texinfos[(usize)index].enabled) {
-                            auto& compos = texinfos[(usize)index].composEnabled;
-
-                            usize num = std::min(std::size(compos), std::size(wput.components));
-                            for (usize i = 0; i < num; i++) {
-                                if (compos[i]) combos[wput.components[i].combo] = "1";
-                            }
-                        }
-
-                    } else {
-                        if (sv_json.contains("default")) {
-                            auto        value = sv_json.at("default");
-                            ShaderValue sv;
-                            name = defines.back();
-                            if (value.is_string()) {
-                                std::vector<float> v;
-                                GET_JSON_VALUE(value, v);
-                                sv = std::span<const float>(v);
-                            } else if (value.is_number()) {
-                                sv.setSize(1);
-                                GET_JSON_VALUE(value, sv[0]);
-                            }
-                            shadervalues[name] = sv;
-                        }
-                        if (sv_json.contains("combo")) {
-                            std::string name;
-                            GET_JSON_NAME_VALUE(sv_json, "combo", name);
-                            combos[name] = "1";
-                        }
-                    }
-                    if (defines.back()[0] != 'g') {
-                        LOG_INFO("PreShaderSrc User shadervalue not supported");
-                    }
-                }
-            }
-        }
-
-        // end
-        if (line.find("void main()") != std::string::npos || clineEnd == std::string::npos) {
-            break;
-        }
-        pos = lineEnd + 1;
-    }
 }
 
 inline usize FindIncludeInsertPos(const std::string& src, usize startPos) {
