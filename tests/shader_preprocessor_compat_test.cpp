@@ -54,13 +54,14 @@ void WriteText(const std::filesystem::path& path, std::string_view text) {
     out << text;
 }
 
-bool CompileFragmentShader(std::string fragment_source) {
+bool CompileFragmentShader(std::string fragment_source, Combos combos = {}) {
     GlslangEnvironment glslang;
     const auto         temp = MakeTempDir();
     fs::VFS            vfs;
     MountAssets(vfs, temp);
 
     WPShaderInfo info;
+    info.combos = std::move(combos);
     std::vector<WPShaderTexInfo> textures;
     std::vector<WPShaderUnit> units {
         WPShaderUnit {
@@ -320,6 +321,16 @@ void main() {
     gl_FragColor = albedo;
 }
 )"));
+}
+
+TEST(ShaderPreprocessorCompatTest, NumericComboMacroTernaryConditionCompiles) {
+    EXPECT_TRUE(CompileFragmentShader(R"(
+void main() {
+    float mask = 0.5;
+    mask = INVERT ? 1.0 - mask : mask;
+    gl_FragColor = vec4(mask, 0.0, 0.0, 1.0);
+}
+)", Combos { { "INVERT", "0" } }));
 }
 
 TEST(ShaderPreprocessorCompatTest, MacroAliasedSvPositionIsNotCrossStageIo) {

@@ -1167,6 +1167,158 @@ void recordMacro(const std::string& trimmed, std::map<std::string, int64_t>& mac
     return std::regex_match(trimCopy(std::string(source)), integer_re);
 }
 
+[[nodiscard]] bool IsSimpleNumericMacroOrLiteral(
+    std::string_view condition,
+    const std::map<std::string, int64_t>& macros)
+{
+    std::string trimmed = trimCopy(std::string(condition));
+
+    while (trimmed.size() >= 2 && trimmed.front() == '(' && trimmed.back() == ')') {
+        const wallpaper::usize close_paren = FindMatchingParen(trimmed, 0);
+        if (close_paren != trimmed.size() - 1) {
+            break;
+        }
+        trimmed = trimCopy(trimmed.substr(1, trimmed.size() - 2));
+    }
+
+    if (trimmed.empty()) {
+        return false;
+    }
+
+    return IsPureIntegerLiteral(trimmed) || macros.contains(trimmed);
+}
+
+[[nodiscard]] bool IsAssignmentDelimiter(std::string_view line, const wallpaper::usize pos)
+{
+    if (pos >= line.size() || line[pos] != '=') {
+        return false;
+    }
+
+    if (pos > 0 && (line[pos - 1] == '=' || line[pos - 1] == '!' ||
+                    line[pos - 1] == '<' || line[pos - 1] == '>')) {
+        return false;
+    }
+
+    return pos + 1 >= line.size() || line[pos + 1] != '=';
+}
+
+[[nodiscard]] wallpaper::usize FindTernaryConditionStart(
+    std::string_view line,
+    const wallpaper::usize question_pos)
+{
+    int paren_depth = 0;
+    int bracket_depth = 0;
+    int brace_depth = 0;
+
+    for (wallpaper::usize pos = question_pos; pos > 0;) {
+        --pos;
+        const char ch = line[pos];
+
+        if (ch == ')') {
+            paren_depth++;
+            continue;
+        }
+        if (ch == ']') {
+            bracket_depth++;
+            continue;
+        }
+        if (ch == '}') {
+            brace_depth++;
+            continue;
+        }
+        if (ch == '(') {
+            if (paren_depth == 0 && bracket_depth == 0 && brace_depth == 0) {
+                return pos + 1;
+            }
+            paren_depth = std::max(0, paren_depth - 1);
+            continue;
+        }
+        if (ch == '[') {
+            bracket_depth = std::max(0, bracket_depth - 1);
+            continue;
+        }
+        if (ch == '{') {
+            if (paren_depth == 0 && bracket_depth == 0 && brace_depth == 0) {
+                return pos + 1;
+            }
+            brace_depth = std::max(0, brace_depth - 1);
+            continue;
+        }
+
+        if (paren_depth != 0 || bracket_depth != 0 || brace_depth != 0) {
+            continue;
+        }
+
+        if (ch == ',' || ch == ';' || IsAssignmentDelimiter(line, pos)) {
+            return pos + 1;
+        }
+    }
+
+    return 0;
+}
+
+[[nodiscard]] std::string RewriteNumericMacroTernaryConditions(
+    std::string source,
+    const std::map<std::string, int64_t>& macros)
+{
+    wallpaper::usize search_pos = 0;
+    while (search_pos < source.size()) {
+        const wallpaper::usize line_end = source.find('\n', search_pos);
+        const wallpaper::usize slice_end = line_end == std::string::npos ? source.size() : line_end;
+        std::string line = source.substr(search_pos, slice_end - search_pos);
+        const std::string trimmed = trimCopy(line);
+
+        if (startsWith(trimmed, "#")) {
+            search_pos = line_end == std::string::npos ? source.size() : line_end + 1;
+            continue;
+        }
+
+        wallpaper::usize code_end = line.find("//");
+        if (code_end == std::string::npos) {
+            code_end = line.size();
+        }
+
+        wallpaper::usize question_pos = 0;
+        while ((question_pos = line.find('?', question_pos)) != std::string::npos &&
+               question_pos < code_end) {
+            wallpaper::usize condition_start = FindTernaryConditionStart(line, question_pos);
+            while (condition_start < question_pos &&
+                   std::isspace(static_cast<unsigned char>(line[condition_start]))) {
+                condition_start++;
+            }
+
+            wallpaper::usize condition_end = question_pos;
+            while (condition_end > condition_start &&
+                   std::isspace(static_cast<unsigned char>(line[condition_end - 1]))) {
+                condition_end--;
+            }
+
+            if (condition_start >= condition_end) {
+                question_pos++;
+                continue;
+            }
+
+            const std::string condition =
+                line.substr(condition_start, condition_end - condition_start);
+            if (!IsSimpleNumericMacroOrLiteral(condition, macros)) {
+                question_pos++;
+                continue;
+            }
+
+            const std::string replacement = "(" + condition + " != 0)";
+            line.replace(condition_start, condition.size(), replacement);
+            const wallpaper::usize delta = replacement.size() - condition.size();
+            code_end += delta;
+            question_pos = condition_start + replacement.size() + 1;
+        }
+
+        source.replace(search_pos, slice_end - search_pos, line);
+        search_pos = search_pos + line.size() + (line_end == std::string::npos ? 0 : 1);
+    }
+
+    return source;
+}
+
 [[nodiscard]] std::string RewriteBuiltinIntegerLiteralArguments(std::string source)
 {
     const std::regex builtin_call_re(R"(\b(mix|smoothstep|step|pow|clamp)\s*\()", std::regex::ECMAScript);
@@ -2235,6 +2387,12 @@ StructuredStageSource LegalizeStageSource(
         "RewriteUserDefinedModFunction",
         std::move(result.source),
         [](std::string source) { return RewriteUserDefinedModFunction(std::move(source)); });
+    result.source = ApplyLegalizerPass(
+        "RewriteNumericMacroTernaryConditions",
+        std::move(result.source),
+        [&macros](std::string source) {
+            return RewriteNumericMacroTernaryConditions(std::move(source), macros);
+        });
     result.source = ApplyLegalizerPass(
         "RewriteVec3Vec2BinaryOps",
         std::move(result.source),
