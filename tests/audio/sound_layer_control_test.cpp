@@ -147,5 +147,108 @@ TEST(SoundLayerControlTest, EmptyLoopReadProducesSilenceAndKeepsPlaying) {
     }
 }
 
+TEST(SoundLayerControlTest, ScriptTriggeredOneShotStopsAfterEnd) {
+    int factory_calls = 0;
+    WPSoundStream stream({ [&factory_calls](const audio::SoundStream::Desc&) {
+                             ++factory_calls;
+                             return MakeFakeStream({ 1.0f, -1.0f });
+                         } },
+                         { .startsilent = true });
+    stream.PassDesc({ .channels = 2, .sampleRate = 48'000 });
+
+    stream.Play();
+    std::array<float, 2> output { 0.0f, 0.0f };
+    EXPECT_EQ(stream.NextPcmData(output.data(), 1), 1u);
+    EXPECT_TRUE(stream.IsPlaying());
+    EXPECT_FLOAT_EQ(output[0], 1.0f);
+    EXPECT_FLOAT_EQ(output[1], -1.0f);
+
+    output = { 9.0f, 9.0f };
+    EXPECT_EQ(stream.NextPcmData(output.data(), 1), 1u);
+    EXPECT_FALSE(stream.IsPlaying());
+    EXPECT_EQ(factory_calls, 1);
+    EXPECT_FLOAT_EQ(output[0], 0.0f);
+    EXPECT_FLOAT_EQ(output[1], 0.0f);
+}
+
+TEST(SoundLayerControlTest, ScriptTriggeredOneShotCanReplayAfterEnd) {
+    int factory_calls = 0;
+    WPSoundStream stream({ [&factory_calls](const audio::SoundStream::Desc&) {
+                             ++factory_calls;
+                             return MakeFakeStream({ 0.75f, -0.75f });
+                         } },
+                         { .startsilent = true });
+    stream.PassDesc({ .channels = 2, .sampleRate = 48'000 });
+
+    stream.Play();
+    std::array<float, 2> output { 0.0f, 0.0f };
+    ASSERT_EQ(stream.NextPcmData(output.data(), 1), 1u);
+    ASSERT_TRUE(stream.IsPlaying());
+    output = { 9.0f, 9.0f };
+    ASSERT_EQ(stream.NextPcmData(output.data(), 1), 1u);
+    ASSERT_FALSE(stream.IsPlaying());
+
+    stream.Play();
+    output = { 0.0f, 0.0f };
+    EXPECT_EQ(stream.NextPcmData(output.data(), 1), 1u);
+    EXPECT_TRUE(stream.IsPlaying());
+    EXPECT_EQ(factory_calls, 2);
+    EXPECT_FLOAT_EQ(output[0], 0.75f);
+    EXPECT_FLOAT_EQ(output[1], -0.75f);
+}
+
+TEST(SoundLayerControlTest, AuthoredLoopRestartsAfterEnd) {
+    int factory_calls = 0;
+    WPSoundStream stream({ [&factory_calls](const audio::SoundStream::Desc&) {
+                             ++factory_calls;
+                             return MakeFakeStream({ 0.25f, -0.25f });
+                         } },
+                         { .mode = PlaybackMode::Loop });
+    stream.PassDesc({ .channels = 2, .sampleRate = 48'000 });
+
+    std::array<float, 2> output { 0.0f, 0.0f };
+    EXPECT_EQ(stream.NextPcmData(output.data(), 1), 1u);
+    EXPECT_TRUE(stream.IsPlaying());
+    EXPECT_FLOAT_EQ(output[0], 0.25f);
+    EXPECT_FLOAT_EQ(output[1], -0.25f);
+
+    output = { 9.0f, 9.0f };
+    EXPECT_EQ(stream.NextPcmData(output.data(), 1), 1u);
+    EXPECT_TRUE(stream.IsPlaying());
+    EXPECT_EQ(factory_calls, 2);
+    EXPECT_FLOAT_EQ(output[0], 0.25f);
+    EXPECT_FLOAT_EQ(output[1], -0.25f);
+}
+
+TEST(SoundLayerControlTest, RandomPlaybackRestartsAfterEnd) {
+    int factory_calls = 0;
+    WPSoundStream stream({ [&factory_calls](const audio::SoundStream::Desc&) {
+                             ++factory_calls;
+                             return MakeFakeStream({ 0.125f, -0.125f });
+                         } },
+                         { .mode = PlaybackMode::Random });
+    stream.PassDesc({ .channels = 2, .sampleRate = 48'000 });
+
+    std::array<float, 2> output { 0.0f, 0.0f };
+    EXPECT_EQ(stream.NextPcmData(output.data(), 1), 1u);
+    EXPECT_TRUE(stream.IsPlaying());
+    EXPECT_FLOAT_EQ(output[0], 0.125f);
+    EXPECT_FLOAT_EQ(output[1], -0.125f);
+
+    output = { 9.0f, 9.0f };
+    EXPECT_EQ(stream.NextPcmData(output.data(), 1), 1u);
+    EXPECT_TRUE(stream.IsPlaying());
+    EXPECT_EQ(factory_calls, 2);
+    EXPECT_FLOAT_EQ(output[0], 0.125f);
+    EXPECT_FLOAT_EQ(output[1], -0.125f);
+}
+
+TEST(SoundLayerControlTest, ParsesWallpaperEnginePlaybackModes) {
+    EXPECT_EQ(ParseSoundPlaybackMode("single"), PlaybackMode::OneShot);
+    EXPECT_EQ(ParseSoundPlaybackMode("random"), PlaybackMode::Random);
+    EXPECT_EQ(ParseSoundPlaybackMode("loop"), PlaybackMode::Loop);
+    EXPECT_EQ(ParseSoundPlaybackMode(""), PlaybackMode::Loop);
+}
+
 } // namespace
 } // namespace wallpaper

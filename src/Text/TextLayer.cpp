@@ -20,6 +20,11 @@ namespace wallpaper
 
 namespace
 {
+constexpr float kWallpaperEnginePointSizeToPx = 4.0f;
+#ifdef WESCENE_BUILD_TESTS
+uint64_t g_measurement_count { 0 };
+#endif
+
 class FtLibrary {
 public:
     static FtLibrary& Get() {
@@ -49,6 +54,12 @@ struct FtFaceDeleter {
         if (face != nullptr) FT_Done_Face(face);
     }
 };
+
+FT_UInt FreeTypePixelSize(float point_size) {
+    if (! std::isfinite(point_size) || point_size <= 0.0f) point_size = 12.0f;
+    return static_cast<FT_UInt>(
+        std::clamp(std::lround(point_size * kWallpaperEnginePointSizeToPx), 1l, 1024l));
+}
 
 struct GlyphRun {
     uint32_t codepoint { 0 };
@@ -118,8 +129,7 @@ CreateFreeTypeFaceFromBytes(const std::vector<uint8_t>& data, float point_size) 
         return nullptr;
     }
 
-    const auto pixel_size = static_cast<FT_UInt>(
-        std::clamp(std::lround(std::max(1.0f, point_size) * 4.0f), 1l, 1024l));
+    const auto pixel_size = FreeTypePixelSize(point_size);
     if (FT_Set_Pixel_Sizes(raw_face, 0, pixel_size) != 0) {
         FT_Done_Face(raw_face);
         return nullptr;
@@ -138,7 +148,7 @@ CreateFreeTypeFace(const TextLayerState& state, std::vector<uint8_t>& owned_data
 }
 
 struct FallbackFace {
-    std::vector<uint8_t> data;
+    std::vector<uint8_t>                                           data;
     std::unique_ptr<std::remove_pointer_t<FT_Face>, FtFaceDeleter> face;
 };
 
@@ -231,7 +241,8 @@ float HorizontalLineStart(const TextLayerState& state, float line_width, float m
     return padding;
 }
 
-void AppendGlyphRun(FT_Face primary_face, FT_Face fallback_face, uint32_t codepoint, LineRun& line) {
+void AppendGlyphRun(FT_Face primary_face, FT_Face fallback_face, uint32_t codepoint,
+                    LineRun& line) {
     FT_Face face     = primary_face;
     bool    fallback = false;
     if (FT_Get_Char_Index(face, codepoint) == 0u && fallback_face != nullptr &&
@@ -415,11 +426,10 @@ std::optional<Eigen::Vector2f> MeasureFreeTypeText(const TextLayerState& state) 
     if (face == nullptr) return std::nullopt;
     auto fallback_face = CreateFallbackFace(state);
 
-    const auto lines          = BuildLineRuns(face.get(),
-                                    fallback_face ? fallback_face->face.get() : nullptr,
-                                    state.text);
-    float      max_line_width = 0.0f;
-    bool       saw_glyph      = false;
+    const auto lines =
+        BuildLineRuns(face.get(), fallback_face ? fallback_face->face.get() : nullptr, state.text);
+    float max_line_width = 0.0f;
+    bool  saw_glyph      = false;
     for (const auto& line : lines) {
         max_line_width = std::max(max_line_width, line.LayoutWidth());
         saw_glyph      = saw_glyph || ! line.glyphs.empty();
@@ -462,14 +472,19 @@ std::size_t LongestLineCodepoints(std::string_view text) {
     }
     return std::max(longest, current);
 }
+
+bool HasExplicitTextLayerSize(const TextLayerState& state) {
+    return state.explicit_size.x() > 0.0f && state.explicit_size.y() > 0.0f;
+}
 } // namespace
 
 Eigen::Vector2f EstimateTextLayerSize(std::string_view text, float point_size, float padding) {
     if (! std::isfinite(point_size) || point_size <= 0.0f) point_size = 12.0f;
     if (! std::isfinite(padding) || padding < 0.0f) padding = 0.0f;
 
-    const float glyph_width = std::max(1.0f, point_size * 0.6f);
-    const float line_height = std::max(1.0f, point_size * 1.2f);
+    const float pixel_size  = point_size * kWallpaperEnginePointSizeToPx;
+    const float glyph_width = std::max(1.0f, pixel_size * 0.6f);
+    const float line_height = std::max(1.0f, pixel_size * 1.2f);
     const auto  columns     = std::max<std::size_t>(1u, LongestLineCodepoints(text));
     const auto  lines       = std::max<std::size_t>(1u, LineCount(text));
 
@@ -478,17 +493,60 @@ Eigen::Vector2f EstimateTextLayerSize(std::string_view text, float point_size, f
 }
 
 Eigen::Vector2f MeasureTextLayerSize(const TextLayerState& state) {
+#ifdef WESCENE_BUILD_TESTS
+    ++g_measurement_count;
+#endif
     if (auto measured = MeasureFreeTypeText(state); measured.has_value()) {
         return *measured;
     }
     return EstimateTextLayerSize(state.text, state.point_size, state.padding);
 }
 
-Eigen::Vector2f TextLayerRasterSize(const TextLayerState& state) {
-    if (state.explicit_size.x() > 0.0f && state.explicit_size.y() > 0.0f) {
+Eigen::Vector2f TextLayerLayoutSize(const TextLayerState& state) {
+    if (HasExplicitTextLayerSize(state)) {
         return state.explicit_size;
     }
     return MeasureTextLayerSize(state);
+}
+
+Eigen::Vector2f TextLayerRasterSize(const TextLayerState& state) {
+    if (HasExplicitTextLayerSize(state)) {
+        return state.explicit_size.cwiseMax(MeasureTextLayerSize(state));
+    }
+    return MeasureTextLayerSize(state);
+}
+
+TextLayerRenderBounds TextLayerRenderBoundsForRasterSize(const TextLayerState& state,
+                                                         Eigen::Vector2f raster_size) {
+    const Eigen::Vector2f layout_size =
+        HasExplicitTextLayerSize(state) ? state.explicit_size : raster_size;
+
+    TextLayerRenderBounds bounds {
+        .left   = raster_size.x() * -0.5f,
+        .right  = raster_size.x() * 0.5f,
+        .bottom = raster_size.y() * -0.5f,
+        .top    = raster_size.y() * 0.5f,
+    };
+
+    if (ContainsSubstring(state.horizontal_align, "left")) {
+        bounds.left  = layout_size.x() * -0.5f;
+        bounds.right = bounds.left + raster_size.x();
+    } else if (ContainsSubstring(state.horizontal_align, "right")) {
+        bounds.right = layout_size.x() * 0.5f;
+        bounds.left  = bounds.right - raster_size.x();
+    }
+
+    const std::string_view vertical_align =
+        state.vertical_align.empty() ? state.anchor : state.vertical_align;
+    if (ContainsSubstring(vertical_align, "bottom")) {
+        bounds.bottom = layout_size.y() * -0.5f;
+        bounds.top    = bounds.bottom + raster_size.y();
+    } else if (ContainsSubstring(vertical_align, "top")) {
+        bounds.top    = layout_size.y() * 0.5f;
+        bounds.bottom = bounds.top - raster_size.y();
+    }
+
+    return bounds;
 }
 
 std::string TextTextureName(std::string_view layer_key) {
@@ -501,6 +559,16 @@ void RasterizeTextLayer(const TextLayerState& state, uint32_t width, uint32_t he
         RasterizeFallbackText(state, width, height, rgba);
     }
 }
+
+#ifdef WESCENE_BUILD_TESTS
+uint64_t TextLayerMeasurementCountForTests() {
+    return g_measurement_count;
+}
+
+void ResetTextLayerMeasurementCountForTests() {
+    g_measurement_count = 0;
+}
+#endif
 
 TextLayer::TextLayer(TextLayerState state): m_state(std::move(state)) {
     if (m_state.resolved_font_identity.empty()) m_state.resolved_font_identity = m_state.font_key;
@@ -525,7 +593,13 @@ void TextLayer::ClearDirty() {
     m_state.full_dirty  = false;
 }
 
-void TextLayer::Relayout() { m_state.layout_size = TextLayerRasterSize(m_state); }
+Eigen::Vector2f TextLayer::rasterSize() const { return TextLayerRasterSize(m_state); }
+
+TextLayerRenderBounds TextLayer::renderBounds() const {
+    return TextLayerRenderBoundsForRasterSize(m_state, rasterSize());
+}
+
+void TextLayer::Relayout() { m_state.layout_size = TextLayerLayoutSize(m_state); }
 
 void TextLayer::EnsureCacheIdentity() {
     if (! m_state.texture_cache_key.empty()) return;

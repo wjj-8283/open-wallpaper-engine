@@ -12,6 +12,8 @@
 #include "SpriteAnimation.hpp"
 #include "Interface/IShaderValueUpdater.h"
 
+#include <cstdint>
+#include <limits>
 #include <optional>
 
 namespace wallpaper
@@ -64,7 +66,7 @@ public:
         // uniforms
         std::optional<ShaderReflected::Block> uniform_block;
         std::function<void()>                 update_op;
-        uint64_t                              uploaded_mesh_dirty_generation { 0 };
+        uint64_t uploaded_mesh_dirty_generation { std::numeric_limits<uint64_t>::max() };
     };
 
     CustomShaderPass(const Desc&);

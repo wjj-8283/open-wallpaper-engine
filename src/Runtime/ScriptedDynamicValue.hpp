@@ -30,6 +30,8 @@ public:
 
     void update(const DynamicValue& other) override;
 
+    const std::string& LayerName() const { return m_current_layer_name; }
+
     void reevaluate();
     void DispatchCursorClick(const ScriptHostContext& host_context);
     void DispatchCursorDown(const ScriptHostContext& host_context);
@@ -43,6 +45,7 @@ public:
 
 private:
     SceneRuntimeContext*                         m_runtime = nullptr;
+    std::string                                  m_current_layer_name;
     std::map<std::string, DynamicValueUniquePtr> m_script_properties;
     std::unique_ptr<PropertyScriptProgram>       m_program;
     DynamicValue                                 m_base_value;

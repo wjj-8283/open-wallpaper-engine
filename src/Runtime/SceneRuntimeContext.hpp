@@ -98,8 +98,7 @@ public:
     bool            SetNodeTranslate(std::string_view name, const Eigen::Vector3f& value);
     bool            SetNodeScale(std::string_view name, const Eigen::Vector3f& value);
     bool            SetNodeAlignment(std::string_view name, std::string alignment);
-    bool            SetNodeTextAlignment(std::string_view name,
-                                         std::string      alignment,
+    bool            SetNodeTextAlignment(std::string_view name, std::string alignment,
                                          const Eigen::Vector3f& origin);
     bool            SetNodeRotation(std::string_view name, const Eigen::Vector3f& value);
     Eigen::Vector3f NodeTranslate(std::string_view name) const;
@@ -109,18 +108,18 @@ public:
     std::string     NodeText(std::string_view name) const;
     bool            NodeTextDirty(std::string_view name) const;
     std::optional<TextLayerState> NodeTextState(std::string_view name) const;
-    bool            SetNodeText(std::string_view name, std::string text);
-    bool            ClearNodeTextDirty(std::string_view name);
-    void            PumpTextLayerCache();
-    bool            NodeHasVideoTexture(std::string_view name) const;
-    bool            PlayNodeVideoTexture(std::string_view name);
-    bool            PauseNodeVideoTexture(std::string_view name);
-    bool            SetNodeVideoTextureCurrentTime(std::string_view name, double seconds);
-    double          NodeVideoTextureCurrentTime(std::string_view name) const;
-    bool            SetNodeVideoTextureRate(std::string_view name, float rate);
-    float           NodeVideoTextureRate(std::string_view name) const;
-    double          NodeVideoTextureDuration(std::string_view name) const;
-    void            SetVideoTextureDuration(std::string_view texture_key, double seconds);
+    bool                          SetNodeText(std::string_view name, std::string text);
+    bool                          ClearNodeTextDirty(std::string_view name);
+    void                          PumpTextLayerCache();
+    bool                          NodeHasVideoTexture(std::string_view name) const;
+    bool                          PlayNodeVideoTexture(std::string_view name);
+    bool                          PauseNodeVideoTexture(std::string_view name);
+    bool   SetNodeVideoTextureCurrentTime(std::string_view name, double seconds);
+    double NodeVideoTextureCurrentTime(std::string_view name) const;
+    bool   SetNodeVideoTextureRate(std::string_view name, float rate);
+    float  NodeVideoTextureRate(std::string_view name) const;
+    double NodeVideoTextureDuration(std::string_view name) const;
+    void   SetVideoTextureDuration(std::string_view texture_key, double seconds);
     video::VideoPlaybackState
                                  ResolveVideoPlaybackState(std::string_view texture_key,
                                                            double           fallback_scene_elapsed_seconds) const;
@@ -186,6 +185,10 @@ private:
         float  rate { 1.0f };
         bool   paused { false };
     };
+    struct SceneScriptBinding {
+        std::unique_ptr<SceneScriptProgram> script;
+        bool                                cursor_inside { false };
+    };
     struct LayerTemplateBinding {
         std::string                canonical_path;
         std::shared_ptr<SceneNode> node;
@@ -194,6 +197,9 @@ private:
     std::shared_ptr<WPSoundStream> LockSoundLayer(std::string_view name) const;
     void DispatchMediaPlaybackChanged(std::string_view name, bool playing);
     void ApplyNodeTransform(std::string_view name);
+    bool CursorHitsLayer(std::string_view name) const;
+    bool CursorHitsScriptLayer(const ScriptedDynamicValue& value) const;
+    bool CursorHitsScriptLayer(const SceneScriptProgram& script) const;
 
     std::unique_ptr<ScriptEngine>                                  m_script_engine;
     std::unique_ptr<ScriptHostContext>                             m_host_context;
@@ -221,7 +227,8 @@ private:
     std::unordered_map<std::string, VideoTexturePlaybackBinding>   m_video_texture_playback;
     std::unordered_map<std::string, std::weak_ptr<WPSoundStream>>  m_sound_layers;
     std::vector<ScriptedDynamicValue*>                             m_scripted_values;
-    std::vector<std::unique_ptr<SceneScriptProgram>>               m_scene_scripts;
+    std::unordered_map<ScriptedDynamicValue*, bool>                m_scripted_value_cursor_inside;
+    std::vector<SceneScriptBinding>                                m_scene_scripts;
     std::vector<std::string>                                       m_script_errors;
     uint64_t                                                       m_next_generated_layer_id { 1 };
     bool m_scene_requires_audio_response { false };

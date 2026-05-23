@@ -36,6 +36,13 @@ struct TextLayerState {
     Eigen::Vector2f      layout_size { Eigen::Vector2f::Zero() };
 };
 
+struct TextLayerRenderBounds {
+    float left { 0.0f };
+    float right { 0.0f };
+    float bottom { 0.0f };
+    float top { 0.0f };
+};
+
 class TextLayer {
 public:
     explicit TextLayer(TextLayerState state);
@@ -43,6 +50,8 @@ public:
     const TextLayerState& state() const { return m_state; }
     const std::string&    text() const { return m_state.text; }
     Eigen::Vector2f       size() const { return m_state.layout_size; }
+    Eigen::Vector2f       rasterSize() const;
+    TextLayerRenderBounds renderBounds() const;
     bool                  dirty() const { return m_state.dirty; }
 
     void SetText(std::string text);
@@ -58,9 +67,16 @@ private:
 
 Eigen::Vector2f EstimateTextLayerSize(std::string_view text, float point_size, float padding);
 Eigen::Vector2f MeasureTextLayerSize(const TextLayerState& state);
+Eigen::Vector2f TextLayerLayoutSize(const TextLayerState& state);
 Eigen::Vector2f TextLayerRasterSize(const TextLayerState& state);
+TextLayerRenderBounds TextLayerRenderBoundsForRasterSize(const TextLayerState& state,
+                                                         Eigen::Vector2f raster_size);
 std::string     TextTextureName(std::string_view layer_key);
 void            RasterizeTextLayer(const TextLayerState& state, uint32_t width, uint32_t height,
                                    std::vector<uint8_t>& rgba);
+#ifdef WESCENE_BUILD_TESTS
+uint64_t        TextLayerMeasurementCountForTests();
+void            ResetTextLayerMeasurementCountForTests();
+#endif
 
 } // namespace wallpaper

@@ -67,6 +67,8 @@ struct ParseContext {
     std::unordered_set<int32_t>                             attached_layer_nodes;
     std::vector<int32_t>                                    layer_node_order;
     std::vector<std::pair<std::string, std::string>>        pending_scene_scripts;
+    std::unordered_map<std::string, uint32_t>               layer_name_counts;
+    std::unordered_map<int32_t, std::string>                object_runtime_names;
     std::unordered_map<std::string, uint32_t>               text_name_counts;
 
     ShaderValueMap             global_base_uniforms;
@@ -243,9 +245,22 @@ bool HasChildObject(const nlohmann::json& objects, int32_t parent_id) {
     return false;
 }
 
-std::string LayerRuntimeName(const RawLayerObject& layer) {
-    if (! layer.name.empty()) return layer.name;
+std::string LayerRuntimeName(const ParseContext& context, const RawLayerObject& layer) {
+    if (! layer.name.empty()) {
+        const auto count = context.layer_name_counts.find(layer.name);
+        if (count == context.layer_name_counts.end() || count->second <= 1u) return layer.name;
+    }
     return "__we_layer_" + std::to_string(layer.id);
+}
+
+template<typename T>
+std::string LayerRuntimeName(const ParseContext& context, const T& object) {
+    if (const auto iterator = context.object_runtime_names.find(object.id);
+        iterator != context.object_runtime_names.end()) {
+        return iterator->second;
+    }
+    if (! object.name.empty()) return object.name;
+    return "__we_layer_" + std::to_string(object.id);
 }
 
 void AttachLayerNode(ParseContext& context, int32_t layer_id) {
@@ -308,7 +323,7 @@ void ParseLayerNodes(ParseContext& context, const nlohmann::json& objects) {
     }
 
     for (const auto& layer : layers) {
-        const auto runtime_name = LayerRuntimeName(layer);
+        const auto runtime_name = LayerRuntimeName(context, layer);
         const bool allow_script_update =
             AllowSceneScriptsForVisibilitySetting(layer.dynamic_visible, layer.visible_setting);
         auto node = std::make_shared<SceneNode>(Vector3f(layer.origin.data()),
@@ -392,6 +407,38 @@ void GenCardMesh(SceneMesh& mesh, const std::array<uint16_t, 2> size,
 		left,  top, z,
 		right, bottom, z,
 		right,  top, z,
+	};
+	const std::array texCoord = {
+		0.0f, th,
+		0.0f, 0.0f,
+		tw, th,
+		tw, 0.0f,
+	};
+    // clang-format on
+
+    SceneVertexArray vertex(
+        {
+            { WE_IN_POSITION.data(), VertexType::FLOAT3 },
+            { WE_IN_TEXCOORD.data(), VertexType::FLOAT2 },
+        },
+        4);
+    vertex.SetVertex(WE_IN_POSITION, pos);
+    vertex.SetVertex(WE_IN_TEXCOORD, texCoord);
+    mesh.AddVertexArray(std::move(vertex));
+}
+
+void GenTextCardMesh(SceneMesh& mesh, TextLayerRenderBounds bounds,
+                     const std::array<float, 2> mapRate = { 1.0f, 1.0f }) {
+    float z = 0.0f;
+
+    float tw = mapRate[0], th = mapRate[1];
+
+    // clang-format off
+	const std::array pos = {
+		bounds.left,  bounds.bottom, z,
+		bounds.left,  bounds.top,    z,
+		bounds.right, bounds.bottom, z,
+		bounds.right, bounds.top,    z,
 	};
 	const std::array texCoord = {
 		0.0f, th,
@@ -1060,10 +1107,8 @@ void ParseTextObj(ParseContext& context, wpscene::WPTextObject& obj) {
     node->SetVisible(obj.visible);
     node->ID() = obj.id;
 
-    auto mesh = std::make_shared<SceneMesh>();
-    GenCardMesh(*mesh,
-                { static_cast<uint16_t>(std::clamp(size.x(), 1.0f, 65535.0f)),
-                  static_cast<uint16_t>(std::clamp(size.y(), 1.0f, 65535.0f)) });
+    auto mesh = std::make_shared<SceneMesh>(true);
+    GenTextCardMesh(*mesh, TextLayerRenderBoundsForRasterSize(text_state, size));
     node->AddMesh(mesh);
 
     const bool allow_script_update =
@@ -1265,7 +1310,7 @@ void RegisterMaterialConstants(ParseContext& context, SceneMaterial* material,
     }
 }
 
-void RegisterNodeVideoTextureRuntime(ParseContext& context, const wpscene::WPImageObject& wpimgobj,
+void RegisterNodeVideoTextureRuntime(ParseContext& context, const std::string& runtime_name,
                                      const SceneMaterial* material) {
     if (context.scene->runtime == nullptr || material == nullptr) return;
 
@@ -1274,7 +1319,7 @@ void RegisterNodeVideoTextureRuntime(ParseContext& context, const wpscene::WPIma
         const auto texture_iterator = context.scene->textures.find(texture_name);
         if (texture_iterator == context.scene->textures.end()) continue;
         if (! texture_iterator->second.isVideo) continue;
-        context.scene->runtime->RegisterNodeVideoTexture(wpimgobj.name, texture_name);
+        context.scene->runtime->RegisterNodeVideoTexture(runtime_name, texture_name);
         const ImageHeader header = context.scene->imageParser->ParseHeader(texture_name);
         if (header.durationSeconds > 0.0) {
             context.scene->runtime->SetVideoTextureDuration(texture_name, header.durationSeconds);
@@ -1645,6 +1690,7 @@ void InitContext(ParseContext& context, fs::VFS& vfs, wpscene::WPScene& sc) {
 
 void ParseImageObj(ParseContext& context, wpscene::WPImageObject& img_obj) {
     auto& wpimgobj = img_obj;
+    const auto runtime_name = LayerRuntimeName(context, wpimgobj);
     if (! wpimgobj.visible && ! wpimgobj.dynamic_visible) return;
 
     auto& vfs = *context.vfs;
@@ -1715,7 +1761,7 @@ void ParseImageObj(ParseContext& context, wpscene::WPImageObject& img_obj) {
     auto       spImgNode = std::make_shared<SceneNode>(Vector3f(wpimgobj.origin.data()),
                                                  Vector3f(wpimgobj.scale.data()),
                                                  Vector3f(wpimgobj.angles.data()),
-                                                 wpimgobj.name);
+                                                 runtime_name);
     const bool allow_script_update =
         AllowSceneScriptsForVisibilitySetting(wpimgobj.dynamic_visible, wpimgobj.visible_setting);
     context.layer_nodes[wpimgobj.id] = spImgNode;
@@ -1738,55 +1784,55 @@ void ParseImageObj(ParseContext& context, wpscene::WPImageObject& img_obj) {
         context.scene->runtime->RegisterMaterialAlphaAnimation(material, *animation);
     };
     if (context.scene->runtime != nullptr) {
-        context.scene->runtime->RegisterNode(wpimgobj.name, spImgNode.get());
+        context.scene->runtime->RegisterNode(runtime_name, spImgNode.get());
         context.scene->runtime->RegisterNodeSize(
-            wpimgobj.name,
+            runtime_name,
             Eigen::Vector2f(static_cast<float>(wpimgobj.size[0]),
                             static_cast<float>(wpimgobj.size[1])));
         context.scene->runtime->RegisterNodeVisibility(
-            wpimgobj.name,
+            runtime_name,
             spImgNode.get(),
             ResolveBoolSetting(*context.scene->runtime,
                                wpimgobj.dynamic_visible ? wpimgobj.visible_setting
                                                         : nlohmann::json(wpimgobj.visible),
-                               wpimgobj.name,
+                               runtime_name,
                                allow_script_update));
         if (wpimgobj.dynamic_origin) {
             context.scene->runtime->RegisterNodeTranslate(
-                wpimgobj.name,
+                runtime_name,
                 spImgNode.get(),
                 ResolveVec3Setting(*context.scene->runtime,
                                    wpimgobj.origin_setting,
-                                   wpimgobj.name,
+                                   runtime_name,
                                    Vec3SettingSemantic::Generic,
                                    allow_script_update));
         }
         if (wpimgobj.dynamic_scale) {
             context.scene->runtime->RegisterNodeScale(
-                wpimgobj.name,
+                runtime_name,
                 spImgNode.get(),
                 ResolveVec3Setting(*context.scene->runtime,
                                    wpimgobj.scale_setting,
-                                   wpimgobj.name,
+                                   runtime_name,
                                    Vec3SettingSemantic::Generic,
                                    allow_script_update));
         }
         if (wpimgobj.dynamic_angles) {
             context.scene->runtime->RegisterNodeRotation(
-                wpimgobj.name,
+                runtime_name,
                 spImgNode.get(),
                 ResolveVec3Setting(*context.scene->runtime,
                                    wpimgobj.angles_setting,
-                                   wpimgobj.name,
+                                   runtime_name,
                                    Vec3SettingSemantic::AnglesDegrees,
                                    allow_script_update));
         }
     }
     if (allow_script_update) {
-        QueueSceneScriptIfNeeded(context, wpimgobj.name, wpimgobj.visible_setting);
-        QueueSceneScriptIfNeeded(context, wpimgobj.name, wpimgobj.origin_setting);
-        QueueSceneScriptIfNeeded(context, wpimgobj.name, wpimgobj.scale_setting);
-        QueueSceneScriptIfNeeded(context, wpimgobj.name, wpimgobj.angles_setting);
+        QueueSceneScriptIfNeeded(context, runtime_name, wpimgobj.visible_setting);
+        QueueSceneScriptIfNeeded(context, runtime_name, wpimgobj.origin_setting);
+        QueueSceneScriptIfNeeded(context, runtime_name, wpimgobj.scale_setting);
+        QueueSceneScriptIfNeeded(context, runtime_name, wpimgobj.angles_setting);
     }
     LoadAlignment(*spImgNode, wpimgobj.alignment, { wpimgobj.size[0], wpimgobj.size[1] });
     spImgNode->ID() = wpimgobj.id;
@@ -1919,14 +1965,14 @@ void ParseImageObj(ParseContext& context, wpscene::WPImageObject& img_obj) {
                 spImgNode.get(), material_slot_index, slot.shader_value_data);
             RegisterMaterialConstants(context, material_slot, slot.source, slot.shader_info);
             registerImageAlphaAnimation(material_slot);
-            RegisterNodeVideoTextureRuntime(context, wpimgobj, material_slot);
+            RegisterNodeVideoTextureRuntime(context, runtime_name, material_slot);
         }
     } else {
         mesh.AddMaterial(std::move(material));
         RemapSubmeshesToMaterialSlot(mesh, 0);
         RegisterMaterialConstants(context, spMesh->Material(), wpimgobj.material, shaderInfo);
         registerImageAlphaAnimation(spMesh->Material());
-        RegisterNodeVideoTextureRuntime(context, wpimgobj, spMesh->Material());
+        RegisterNodeVideoTextureRuntime(context, runtime_name, spMesh->Material());
     }
     spImgNode->AddMesh(spMesh);
 
@@ -1972,7 +2018,7 @@ void ParseImageObj(ParseContext& context, wpscene::WPImageObject& img_obj) {
             scene.cameras.at(nodeAddr)->AttatchImgEffect(imgEffectLayer);
             if (context.scene->runtime != nullptr) {
                 context.scene->runtime->RegisterNodeEffectFinal(
-                    wpimgobj.name, spImgNode.get(), imgEffectLayer.get());
+                    runtime_name, spImgNode.get(), imgEffectLayer.get());
             }
         }
         // set renderTarget for ping-pong operate
@@ -2228,58 +2274,59 @@ void ParseParticleObj(ParseContext& context, wpscene::WPParticleObject& wppartob
 
     } else {
         p_particle_obj = &wppartobj.particleObj;
+        const auto runtime_name = LayerRuntimeName(context, wppartobj);
         spNode         = std::make_shared<SceneNode>(Vector3f(wppartobj.origin.data()),
                                              Vector3f(wppartobj.scale.data()),
                                              Vector3f(wppartobj.angles.data()),
-                                             wppartobj.name);
+                                             runtime_name);
         const bool allow_script_update = AllowSceneScriptsForVisibilitySetting(
             wppartobj.dynamic_visible, wppartobj.visible_setting);
         if (context.scene->runtime != nullptr) {
-            context.scene->runtime->RegisterNode(wppartobj.name, spNode.get());
+            context.scene->runtime->RegisterNode(runtime_name, spNode.get());
             context.scene->runtime->RegisterNodeVisibility(
-                wppartobj.name,
+                runtime_name,
                 spNode.get(),
                 ResolveBoolSetting(*context.scene->runtime,
                                    wppartobj.dynamic_visible ? wppartobj.visible_setting
                                                              : nlohmann::json(wppartobj.visible),
-                                   wppartobj.name,
+                                   runtime_name,
                                    allow_script_update));
             if (wppartobj.dynamic_origin) {
                 context.scene->runtime->RegisterNodeTranslate(
-                    wppartobj.name,
+                    runtime_name,
                     spNode.get(),
                     ResolveVec3Setting(*context.scene->runtime,
                                        wppartobj.origin_setting,
-                                       wppartobj.name,
+                                       runtime_name,
                                        Vec3SettingSemantic::Generic,
                                        allow_script_update));
             }
             if (wppartobj.dynamic_scale) {
                 context.scene->runtime->RegisterNodeScale(
-                    wppartobj.name,
+                    runtime_name,
                     spNode.get(),
                     ResolveVec3Setting(*context.scene->runtime,
                                        wppartobj.scale_setting,
-                                       wppartobj.name,
+                                       runtime_name,
                                        Vec3SettingSemantic::Generic,
                                        allow_script_update));
             }
             if (wppartobj.dynamic_angles) {
                 context.scene->runtime->RegisterNodeRotation(
-                    wppartobj.name,
+                    runtime_name,
                     spNode.get(),
                     ResolveVec3Setting(*context.scene->runtime,
                                        wppartobj.angles_setting,
-                                       wppartobj.name,
+                                       runtime_name,
                                        Vec3SettingSemantic::AnglesDegrees,
                                        allow_script_update));
             }
         }
         if (allow_script_update) {
-            QueueSceneScriptIfNeeded(context, wppartobj.name, wppartobj.visible_setting);
-            QueueSceneScriptIfNeeded(context, wppartobj.name, wppartobj.origin_setting);
-            QueueSceneScriptIfNeeded(context, wppartobj.name, wppartobj.scale_setting);
-            QueueSceneScriptIfNeeded(context, wppartobj.name, wppartobj.angles_setting);
+            QueueSceneScriptIfNeeded(context, runtime_name, wppartobj.visible_setting);
+            QueueSceneScriptIfNeeded(context, runtime_name, wppartobj.origin_setting);
+            QueueSceneScriptIfNeeded(context, runtime_name, wppartobj.scale_setting);
+            QueueSceneScriptIfNeeded(context, runtime_name, wppartobj.angles_setting);
         }
     }
 
@@ -2413,12 +2460,13 @@ void ParseParticleObj(ParseContext& context, wpscene::WPParticleObject& wppartob
     mesh.AddMaterial(std::move(material));
     RegisterMaterialConstants(context, spMesh->Material(), particle_obj.material, shaderInfo);
     if (! is_child && context.scene->runtime != nullptr && spMesh->Material() != nullptr) {
+        const auto runtime_name = LayerRuntimeName(context, wppartobj);
         for (const auto& texture_name : spMesh->Material()->textures) {
             if (texture_name.empty()) continue;
             const auto texture_iterator = context.scene->textures.find(texture_name);
             if (texture_iterator == context.scene->textures.end()) continue;
             if (! texture_iterator->second.isVideo) continue;
-            context.scene->runtime->RegisterNodeVideoTexture(wppartobj.name, texture_name);
+            context.scene->runtime->RegisterNodeVideoTexture(runtime_name, texture_name);
         }
     }
     spNode->AddMesh(spMesh);
@@ -2490,6 +2538,16 @@ void AddWPObject(std::vector<WPObjectVar>& objs, const nlohmann::json& json_obj,
 }
 } // namespace
 
+template<typename T>
+void CountNodeRuntimeName(std::unordered_map<std::string, uint32_t>& counts, const T& object) {
+    if (! object.name.empty()) ++counts[object.name];
+}
+
+std::string NodeRuntimeName(std::string name, int32_t id, uint32_t count) {
+    if (! name.empty() && count <= 1u) return name;
+    return "__we_layer_" + std::to_string(id);
+}
+
 void wallpaper::ApplySystemUserTextures(std::vector<std::string>&                  textures,
                                         const std::vector<wpscene::WPUserTexture>& usertextures) {
     for (std::size_t index = 0; index < usertextures.size(); ++index) {
@@ -2533,12 +2591,55 @@ std::shared_ptr<Scene> WPSceneParser::Parse(const SceneParseRequest& request,
             AddWPObject<wpscene::WPCameraObject>(wp_objs, obj, vfs);
         }
     }
+    context.layer_name_counts.clear();
+    context.object_runtime_names.clear();
     context.text_name_counts.clear();
     for (const auto& obj : wp_objs) {
-        const auto* text = std::get_if<wpscene::WPTextObject>(&obj);
-        if (text != nullptr && ! text->name.empty()) {
-            ++context.text_name_counts[text->name];
+        std::visit(visitor::overload {
+                       [&context](const wpscene::WPImageObject& object) {
+                           CountNodeRuntimeName(context.layer_name_counts, object);
+                       },
+                       [&context](const wpscene::WPParticleObject& object) {
+                           CountNodeRuntimeName(context.layer_name_counts, object);
+                       },
+                       [&context](const wpscene::WPTextObject& text) {
+                           if (! text.name.empty()) ++context.text_name_counts[text.name];
+                       },
+                       [](const auto&) {
+                       },
+                   },
+                   obj);
+    }
+    if (context.object_list != nullptr) {
+        for (const auto& object : *context.object_list) {
+            if (! IsLayerObject(object)) continue;
+
+            RawLayerObject layer;
+            if (ParseLayerObject(object, *context.object_list, layer)) {
+                CountNodeRuntimeName(context.layer_name_counts, layer);
+            }
         }
+    }
+    for (const auto& obj : wp_objs) {
+        std::visit(visitor::overload {
+                       [&context](const wpscene::WPImageObject& object) {
+                           const auto count = object.name.empty()
+                                                  ? 0u
+                                                  : context.layer_name_counts[object.name];
+                           context.object_runtime_names[object.id] =
+                               NodeRuntimeName(object.name, object.id, count);
+                       },
+                       [&context](const wpscene::WPParticleObject& object) {
+                           const auto count = object.name.empty()
+                                                  ? 0u
+                                                  : context.layer_name_counts[object.name];
+                           context.object_runtime_names[object.id] =
+                               NodeRuntimeName(object.name, object.id, count);
+                       },
+                       [](const auto&) {
+                       },
+                   },
+                   obj);
     }
 
     if (sc.general.orthogonalprojection.auto_) {

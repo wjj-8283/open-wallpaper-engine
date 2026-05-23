@@ -370,6 +370,42 @@ function update() {
     EXPECT_EQ(runtime->scriptErrorCount(), 0u);
 }
 
+TEST(ScriptRuntimeCompat, RepeatedSortLayerToHigherIndexMutatesOnlyOnce) {
+    Scene scene;
+    auto  runtime = MakeRuntimeWithScene(scene);
+    ASSERT_NE(runtime, nullptr);
+
+    auto first = std::make_shared<SceneNode>(
+        Eigen::Vector3f::Zero(), Eigen::Vector3f::Ones(), Eigen::Vector3f::Zero(), "first");
+    auto second = std::make_shared<SceneNode>(
+        Eigen::Vector3f::Zero(), Eigen::Vector3f::Ones(), Eigen::Vector3f::Zero(), "second");
+    auto third = std::make_shared<SceneNode>(
+        Eigen::Vector3f::Zero(), Eigen::Vector3f::Ones(), Eigen::Vector3f::Zero(), "third");
+    scene.sceneGraph->AppendChild(first);
+    scene.sceneGraph->AppendChild(second);
+    scene.sceneGraph->AppendChild(third);
+    runtime->RegisterNode("first", first.get());
+    runtime->RegisterNode("second", second.get());
+    runtime->RegisterNode("third", third.get());
+
+    runtime->RegisterSceneScript(
+        R"JS(
+function update() {
+  scene.sortLayer('first', 2);
+}
+)JS",
+        "");
+
+    runtime->Tick(1.0 / 60.0);
+    EXPECT_TRUE(runtime->ConsumeSceneGraphMutationFlag());
+    EXPECT_EQ(runtime->NodeSiblingIndex("first"), 2);
+
+    runtime->Tick(1.0 / 60.0);
+    EXPECT_FALSE(runtime->ConsumeSceneGraphMutationFlag());
+    EXPECT_EQ(runtime->NodeSiblingIndex("first"), 2);
+    EXPECT_EQ(runtime->scriptErrorCount(), 0u);
+}
+
 TEST(ScriptRuntimeCompat, VisibleOnlyBindingIgnoresObjectReturn) {
     auto runtime = CreateSceneRuntimeContext(SceneRuntimeBootstrap {
         .project_properties = {

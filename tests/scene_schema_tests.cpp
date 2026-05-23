@@ -926,6 +926,284 @@ TEST(SceneSchema, SchemaOnlyObjectPreservesRenderableChildParentTransform) {
     EXPECT_NEAR(child->ModelTrans()(0, 3), 30.0, 1.0e-5);
 }
 
+TEST(SceneSchema, ParserUsesStableRuntimeNamesForDuplicateGenericLayerNames) {
+    fs::VFS vfs;
+    MountSceneFiles(vfs);
+    audio::SoundManager sound_manager;
+    WPSceneParser       parser;
+    ProjectProperties   properties;
+    SceneParseRequest   request {
+          .scene_id           = "duplicate-layer-names",
+          .project_properties = &properties,
+    };
+
+    auto scene = parser.Parse(request,
+                              R"({
+      "camera": {"center":[0,0,0], "eye":[0,0,1], "up":[0,1,0]},
+      "general": {
+        "ambientcolor":[0,0,0], "skylightcolor":[0,0,0],
+        "clearcolor":[0,0,0], "cameraparallax":false,
+        "cameraparallaxamount":0, "cameraparallaxdelay":0,
+        "cameraparallaxmouseinfluence":0,
+        "orthogonalprojection":{"width":400,"height":300}
+      },
+      "objects": [
+        {
+          "id": 10,
+          "name": "tap target",
+          "origin": [100,150,0],
+          "visible": {
+            "value": true,
+            "script": "export function update(value) { return value; }"
+          }
+        },
+        {
+          "id": 11,
+          "name": "tap target",
+          "origin": [300,150,0],
+          "visible": {
+            "value": true,
+            "script": "export function update(value) { return value; }"
+          }
+        }
+      ]
+    })",
+                              vfs,
+                              sound_manager);
+
+    ASSERT_NE(scene, nullptr);
+    ASSERT_NE(scene->runtime, nullptr);
+    EXPECT_FALSE(scene->runtime->HasNodeNamed("tap target"));
+    EXPECT_TRUE(scene->runtime->HasNodeNamed("__we_layer_10"));
+    EXPECT_TRUE(scene->runtime->HasNodeNamed("__we_layer_11"));
+}
+
+TEST(SceneSchema, ParserUsesStableRuntimeNamesForDuplicateImageLayerNames) {
+    fs::VFS vfs;
+    MountSceneFiles(vfs);
+    audio::SoundManager sound_manager;
+    WPSceneParser       parser;
+    ProjectProperties   properties;
+    SceneParseRequest   request {
+          .scene_id           = "duplicate-image-layer-names",
+          .project_properties = &properties,
+    };
+
+    auto scene = parser.Parse(request,
+                              R"({
+      "camera": {"center":[0,0,0], "eye":[0,0,1], "up":[0,1,0]},
+      "general": {
+        "ambientcolor":[0,0,0], "skylightcolor":[0,0,0],
+        "clearcolor":[0,0,0], "cameraparallax":false,
+        "cameraparallaxamount":0, "cameraparallaxdelay":0,
+        "cameraparallaxmouseinfluence":0,
+        "orthogonalprojection":{"width":400,"height":300}
+      },
+      "objects": [
+        {
+          "id": 20,
+          "name": "tap target",
+          "image": "image.json",
+          "origin": [100,150,0],
+          "size": [64,32],
+          "visible": true
+        },
+        {
+          "id": 21,
+          "name": "tap target",
+          "image": "image.json",
+          "origin": [300,150,0],
+          "size": [64,32],
+          "visible": true
+        }
+      ]
+    })",
+                              vfs,
+                              sound_manager);
+
+    ASSERT_NE(scene, nullptr);
+    ASSERT_NE(scene->runtime, nullptr);
+    EXPECT_FALSE(scene->runtime->HasNodeNamed("tap target"));
+    EXPECT_TRUE(scene->runtime->HasNodeNamed("__we_layer_20"));
+    EXPECT_TRUE(scene->runtime->HasNodeNamed("__we_layer_21"));
+    EXPECT_EQ(scene->runtime->NodeSize("__we_layer_20"), Eigen::Vector2f(64.0f, 32.0f));
+    EXPECT_EQ(scene->runtime->NodeSize("__we_layer_21"), Eigen::Vector2f(64.0f, 32.0f));
+}
+
+TEST(SceneSchema, DuplicateParsedImageClickScriptsGateRealAssetSoundLayers) {
+    fs::VFS vfs;
+    MountSceneFiles(vfs);
+    audio::SoundManager sound_manager;
+    WPSceneParser       parser;
+    ProjectProperties   properties {
+          { "click_count", RuntimeScalarValue::String("2") },
+    };
+    SceneParseRequest request {
+        .scene_id           = "duplicate-click-script-sounds",
+        .project_properties = &properties,
+    };
+
+    const auto click_script = R"JS(
+'use strict';
+export var scriptProperties = createScriptProperties()
+  .addText({ name: 'count1', label: 'Count1', value: '1' })
+  .addText({ name: 'voice1', label: 'Voice1', value: 'Voice1' })
+  .addText({ name: 'count2', label: 'Count2', value: '2' })
+  .addText({ name: 'voice2', label: 'Voice2', value: 'Voice2' })
+  .addText({ name: 'waitingtime', label: 'Waitingtime', value: '1.0' })
+  .finish();
+var count = 0;
+var waitingtime = 0;
+export function cursorClick() {
+  waitingtime = 0;
+  count++;
+  if (count == scriptProperties.count1)
+    thisScene.getLayer(scriptProperties.voice1).play();
+  if (count == scriptProperties.count2)
+    thisScene.getLayer(scriptProperties.voice2).play();
+}
+export function update(value) {
+  if (count != 0) waitingtime += engine.frametime;
+  if (waitingtime > scriptProperties.waitingtime) {
+    waitingtime = 0;
+    count = 0;
+  }
+}
+)JS";
+    const auto script_setting = [&](std::string_view sound_name) {
+        return nlohmann::json {
+            { "value", true },
+            { "script", click_script },
+            { "scriptproperties",
+              nlohmann::json {
+                  { "count1",
+                    nlohmann::json {
+                        { "user", "click_count" },
+                        { "value",
+                          nlohmann::json {
+                              { "user", "unused_default" },
+                              { "value", "2" },
+                          } },
+                    } },
+                  { "count2", "200" },
+                  { "voice1", std::string(sound_name) },
+                  { "voice2", "Voice2" },
+                  { "waitingtime", "1.0" },
+              } },
+        };
+    };
+
+    nlohmann::json scene_json = {
+        { "camera", { { "center", { 0, 0, 0 } }, { "eye", { 0, 0, 1 } }, { "up", { 0, 1, 0 } } } },
+        { "general",
+          {
+              { "ambientcolor", { 0, 0, 0 } },
+              { "skylightcolor", { 0, 0, 0 } },
+              { "clearcolor", { 0, 0, 0 } },
+              { "cameraparallax", false },
+              { "cameraparallaxamount", 0 },
+              { "cameraparallaxdelay", 0 },
+              { "cameraparallaxmouseinfluence", 0 },
+              { "orthogonalprojection", { { "width", 400 }, { "height", 300 } } },
+          } },
+        { "objects",
+          nlohmann::json::array(
+              { {
+                    { "id", 43 },
+                    { "name", "tap target" },
+                    { "image", "image.json" },
+                    { "origin", { 100, 150, 0 } },
+                    { "size", { 80, 80 } },
+                    { "visible", script_setting("headAudio") },
+                },
+                {
+                    { "id", 59 },
+                    { "name", "tap target" },
+                    { "image", "image.json" },
+                    { "origin", { 200, 150, 0 } },
+                    { "size", { 80, 80 } },
+                    { "visible", script_setting("bodyAudio") },
+                },
+                {
+                    { "id", 62 },
+                    { "name", "tap target" },
+                    { "image", "image.json" },
+                    { "origin", { 300, 150, 0 } },
+                    { "size", { 80, 80 } },
+                    { "visible", script_setting("legAudio") },
+                },
+                {
+                    { "id", 74 },
+                    { "name", "bodyAudio" },
+                    { "sound", nlohmann::json::array({ "sounds/body.wav" }) },
+                    { "playbackmode", "single" },
+                    { "startsilent", true },
+                },
+                {
+                    { "id", 75 },
+                    { "name", "headAudio" },
+                    { "sound", nlohmann::json::array({ "sounds/head.wav" }) },
+                    { "playbackmode", "single" },
+                    { "startsilent", true },
+                },
+                {
+                    { "id", 77 },
+                    { "name", "legAudio" },
+                    { "sound", nlohmann::json::array({ "sounds/leg.wav" }) },
+                    { "playbackmode", "single" },
+                    { "startsilent", true },
+                },
+                {
+                    { "id", 69 },
+                    { "name", "backgroundAudio" },
+                    { "sound", nlohmann::json::array({ "sounds/background.wav" }) },
+                    { "playbackmode", "loop" },
+                    { "startsilent", false },
+                } }) },
+    };
+
+    auto scene = parser.Parse(request, scene_json.dump(), vfs, sound_manager);
+
+    ASSERT_NE(scene, nullptr);
+    ASSERT_NE(scene->runtime, nullptr);
+    EXPECT_TRUE(scene->runtime->SoundLayerPlaying("backgroundAudio"));
+    EXPECT_FALSE(scene->runtime->SoundLayerPlaying("headAudio"));
+    EXPECT_FALSE(scene->runtime->SoundLayerPlaying("bodyAudio"));
+    EXPECT_FALSE(scene->runtime->SoundLayerPlaying("legAudio"));
+
+    scene->runtime->SetCursorInput(0.5f, 0.5f);
+    scene->runtime->SetCursorEnter(true);
+    bool cursor_was_in_window = scene->runtime->DispatchCursorFrameEvents(false);
+    scene->runtime->Tick(1.0 / 60.0);
+
+    EXPECT_TRUE(cursor_was_in_window);
+    EXPECT_FALSE(scene->runtime->SoundLayerPlaying("headAudio"));
+    EXPECT_FALSE(scene->runtime->SoundLayerPlaying("bodyAudio"));
+    EXPECT_FALSE(scene->runtime->SoundLayerPlaying("legAudio"));
+
+    scene->runtime->SetCursorButtons(0u, 1u, 0u);
+    cursor_was_in_window = scene->runtime->DispatchCursorFrameEvents(cursor_was_in_window);
+    scene->runtime->Tick(1.0 / 60.0);
+
+    EXPECT_TRUE(cursor_was_in_window);
+    EXPECT_FALSE(scene->runtime->SoundLayerPlaying("headAudio"));
+    EXPECT_FALSE(scene->runtime->SoundLayerPlaying("bodyAudio"));
+    EXPECT_FALSE(scene->runtime->SoundLayerPlaying("legAudio"));
+
+    scene->runtime->SetCursorButtons(0u, 0u, 0u);
+    cursor_was_in_window = scene->runtime->DispatchCursorFrameEvents(cursor_was_in_window);
+    scene->runtime->Tick(1.0 / 60.0);
+    scene->runtime->SetCursorButtons(0u, 1u, 0u);
+    cursor_was_in_window = scene->runtime->DispatchCursorFrameEvents(cursor_was_in_window);
+    scene->runtime->Tick(1.0 / 60.0);
+
+    EXPECT_TRUE(cursor_was_in_window);
+    EXPECT_FALSE(scene->runtime->SoundLayerPlaying("headAudio"));
+    EXPECT_TRUE(scene->runtime->SoundLayerPlaying("bodyAudio"));
+    EXPECT_FALSE(scene->runtime->SoundLayerPlaying("legAudio"));
+    EXPECT_EQ(scene->runtime->scriptErrorCount(), 0u);
+}
+
 TEST(SceneSchema, ParserBuildsLdrBloomPostProcessWhenBloomEnabledWithoutHdr) {
     fs::VFS vfs;
     MountBloomSceneFiles(vfs);

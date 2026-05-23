@@ -7,7 +7,9 @@
 #include <cstdint>
 #include <functional>
 #include <memory>
+#include <random>
 #include <string>
+#include <string_view>
 #include <vector>
 
 namespace wallpaper
@@ -26,9 +28,12 @@ class SceneRuntimeContext;
 
 enum class PlaybackMode
 {
+    OneShot,
     Random,
     Loop
 };
+
+[[nodiscard]] PlaybackMode ParseSoundPlaybackMode(std::string_view value);
 
 class WPSoundStream : public audio::SoundStream {
 public:
@@ -41,7 +46,7 @@ public:
         float        volume { 1.0f };
         bool         muted { false };
         bool         startsilent { false };
-        PlaybackMode mode { PlaybackMode::Loop };
+        PlaybackMode mode { PlaybackMode::OneShot };
     };
 
     WPSoundStream(const std::vector<std::string>& paths, fs::VFS& vfs, Config config);
@@ -70,10 +75,12 @@ private:
     std::size_t                         m_cur_index { 0 };
     std::vector<StreamFactory>          m_stream_factories;
     std::shared_ptr<audio::SoundStream> m_cur_active;
+    std::mt19937                        m_random { std::random_device {}() };
     std::atomic<float>                  m_volume { 1.0f };
     std::atomic<bool>                   m_muted { false };
     std::atomic<bool>                   m_playing { true };
     std::atomic<bool>                   m_rewind_requested { false };
+    std::atomic<bool>                   m_finished { false };
 };
 
 class WPSoundParser {

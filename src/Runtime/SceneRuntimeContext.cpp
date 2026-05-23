@@ -9,12 +9,15 @@
 #include "Scene/include/Scene/SceneMesh.h"
 #include "Scene/SceneNode.h"
 #include "Scripting/ScriptEngine.hpp"
+#include "SpecTexs.hpp"
 #include "Utils/Logging.h"
 #include "WPSoundParser.hpp"
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <filesystem>
+#include <limits>
 #include <sstream>
 #include <vector>
 
@@ -46,7 +49,7 @@ bool UpdateRuntimeTextTexture(Scene& scene, const TextLayerState& state) {
     auto* runtime_images = dynamic_cast<RuntimeImageSource*>(scene.imageParser.get());
     if (runtime_images == nullptr) return false;
 
-    const auto size = TextLayerRasterSize(state);
+    const auto     size = TextLayerRasterSize(state);
     const uint32_t width =
         std::clamp(static_cast<uint32_t>(std::ceil(std::max(1.0f, size.x()))), 1u, 4096u);
     const uint32_t height =
@@ -54,12 +57,100 @@ bool UpdateRuntimeTextTexture(Scene& scene, const TextLayerState& state) {
     std::vector<uint8_t> rgba(static_cast<std::size_t>(width) * height * 4u, 0u);
     RasterizeTextLayer(state, width, height, rgba);
 
-    runtime_images->SetRgbaImage(TextTextureName(state.layer_key),
-                                 width,
-                                 height,
-                                 rgba.data(),
-                                 rgba.size());
+    runtime_images->SetRgbaImage(
+        TextTextureName(state.layer_key), width, height, rgba.data(), rgba.size());
     return true;
+}
+
+Eigen::Vector2f CardMeshSize(const SceneMesh& mesh) {
+    if (mesh.VertexCount() == 0) return Eigen::Vector2f::Zero();
+
+    const auto& vertices = mesh.GetVertexArray(0);
+    if (vertices.VertexCount() == 0 || vertices.OneSize() < 2) return Eigen::Vector2f::Zero();
+
+    const float* data = vertices.Data();
+    if (data == nullptr) return Eigen::Vector2f::Zero();
+
+    float min_x = data[0];
+    float max_x = data[0];
+    float min_y = data[1];
+    float max_y = data[1];
+    for (std::size_t index = 1; index < vertices.VertexCount(); ++index) {
+        const float x = data[index * vertices.OneSize()];
+        const float y = data[index * vertices.OneSize() + 1u];
+        min_x         = std::min(min_x, x);
+        max_x         = std::max(max_x, x);
+        min_y         = std::min(min_y, y);
+        max_y         = std::max(max_y, y);
+    }
+
+    return Eigen::Vector2f(max_x - min_x, max_y - min_y);
+}
+
+bool SizeNearlyEqual(Eigen::Vector2f lhs, Eigen::Vector2f rhs, float tolerance) {
+    return (lhs - rhs).cwiseAbs().maxCoeff() <= tolerance;
+}
+
+void ResizeCardMesh(SceneMesh& mesh, TextLayerRenderBounds bounds) {
+    if (bounds.right <= bounds.left || bounds.top <= bounds.bottom) return;
+
+    SceneMesh replacement(mesh.Dynamic());
+    constexpr float z  = 0.0f;
+
+    const std::array pos {
+        bounds.left,  bounds.bottom, z, bounds.left, bounds.top, z,
+        bounds.right, bounds.bottom, z, bounds.right, bounds.top, z,
+    };
+    constexpr std::array tex_coord {
+        0.0f, 1.0f, 0.0f, 0.0f, 1.0f, 1.0f, 1.0f, 0.0f,
+    };
+
+    SceneVertexArray vertices(
+        {
+            { WE_IN_POSITION.data(), VertexType::FLOAT3 },
+            { WE_IN_TEXCOORD.data(), VertexType::FLOAT2 },
+        },
+        4);
+    vertices.SetVertex(WE_IN_POSITION, pos);
+    vertices.SetVertex(WE_IN_TEXCOORD, tex_coord);
+    replacement.AddVertexArray(std::move(vertices));
+
+    mesh.ChangeMeshDataFrom(replacement);
+    mesh.SetDirty();
+}
+
+Eigen::Vector3f CursorHitTestWorldPosition(const ScriptHostContext& host_context) {
+    return host_context.cursor_world_position;
+}
+
+bool HitTestNode(SceneNode& node, Eigen::Vector2f size, const Eigen::Vector3f& cursor) {
+    node.UpdateTrans();
+    if (size.x() <= 0.0f && size.y() <= 0.0f) {
+        size = Eigen::Vector2f(100.0f, 100.0f);
+    }
+
+    const double                         half_width  = static_cast<double>(size.x()) * 0.5;
+    const double                         half_height = static_cast<double>(size.y()) * 0.5;
+    const std::array<Eigen::Vector4d, 4> corners {
+        Eigen::Vector4d(-half_width, -half_height, 0.0, 1.0),
+        Eigen::Vector4d(half_width, -half_height, 0.0, 1.0),
+        Eigen::Vector4d(half_width, half_height, 0.0, 1.0),
+        Eigen::Vector4d(-half_width, half_height, 0.0, 1.0),
+    };
+
+    double min_x = std::numeric_limits<double>::max();
+    double min_y = std::numeric_limits<double>::max();
+    double max_x = std::numeric_limits<double>::lowest();
+    double max_y = std::numeric_limits<double>::lowest();
+    for (const auto& corner : corners) {
+        const Eigen::Vector4d world = node.ModelTrans() * corner;
+        min_x                       = std::min(min_x, world.x());
+        max_x                       = std::max(max_x, world.x());
+        min_y                       = std::min(min_y, world.y());
+        max_y                       = std::max(max_y, world.y());
+    }
+
+    return cursor.x() >= min_x && cursor.x() <= max_x && cursor.y() >= min_y && cursor.y() <= max_y;
 }
 
 struct ClonedMaterialBinding {
@@ -114,8 +205,13 @@ bool SortNodeInList(ListT& nodes, SceneNode* target, int index) {
 
     const int size          = static_cast<int>(nodes.size());
     int       clamped_index = std::clamp(index, 0, std::max(0, size - 1));
-    auto      destination   = nodes.begin();
-    std::advance(destination, clamped_index);
+    const int current_index = static_cast<int>(std::distance(nodes.begin(), current));
+    if (current_index == clamped_index) return false;
+    if (clamped_index > current_index) {
+        ++clamped_index;
+    }
+    auto destination = nodes.begin();
+    std::advance(destination, std::min(clamped_index, size));
     if (destination == current) return false;
 
     nodes.splice(destination, nodes, current);
@@ -327,7 +423,7 @@ void SceneRuntimeContext::Tick(double frame_time) {
         ApplyMaterialConstant(*binding.material, binding.name, *binding.value);
     }
     for (auto& script : m_scene_scripts) {
-        if (script != nullptr) script->Tick(*m_host_context);
+        if (script.script != nullptr) script.script->Tick(*m_host_context);
     }
     for (auto& binding : m_material_constants) {
         if (binding.material == nullptr || binding.value == nullptr) continue;
@@ -365,7 +461,7 @@ void SceneRuntimeContext::ApplyProjectPropertyOverride(
     }
 
     for (auto& script : m_scene_scripts) {
-        if (script != nullptr) script->ApplyProjectProperties(m_project_properties);
+        if (script.script != nullptr) script.script->ApplyProjectProperties(m_project_properties);
     }
 }
 
@@ -382,9 +478,7 @@ void SceneRuntimeContext::SetCursorInput(float x, float y) {
     y                                          = std::clamp(y, 0.0f, 1.0f);
     m_host_context->cursor_normalized_position = Eigen::Vector2f(x, y);
     m_host_context->cursor_world_position      = Eigen::Vector3f(
-        x * m_host_context->canvas_size.x(),
-        (1.0f - y) * m_host_context->canvas_size.y(),
-        0.0f);
+        x * m_host_context->canvas_size.x(), (1.0f - y) * m_host_context->canvas_size.y(), 0.0f);
 }
 
 void SceneRuntimeContext::SetCursorEnter(bool entered) {
@@ -426,6 +520,7 @@ DynamicValue* SceneRuntimeContext::FindPropertyValue(std::string_view name) cons
 
 void SceneRuntimeContext::RegisterScriptedValue(ScriptedDynamicValue* value) {
     m_scripted_values.push_back(value);
+    m_scripted_value_cursor_inside[value] = false;
 }
 
 void SceneRuntimeContext::RegisterNode(std::string name, SceneNode* node) {
@@ -547,7 +642,7 @@ void SceneRuntimeContext::RegisterNodeRotation(std::string name, SceneNode* node
 void SceneRuntimeContext::RegisterTextLayer(std::string name, TextLayerState state) {
     if (name.empty()) return;
     if (state.layer_key.empty()) state.layer_key = name;
-    auto layer = TextLayer(std::move(state));
+    auto layer        = TextLayer(std::move(state));
     m_node_size[name] = layer.size();
     m_text_layers.insert_or_assign(std::move(name), std::move(layer));
 }
@@ -604,7 +699,9 @@ void SceneRuntimeContext::RegisterSceneScript(std::string script_source, std::st
                                                             m_project_properties,
                                                             *m_host_context);
     if (script != nullptr && script->Valid()) {
-        m_scene_scripts.push_back(std::move(script));
+        m_scene_scripts.push_back(SceneScriptBinding {
+            .script = std::move(script),
+        });
     }
 }
 
@@ -866,19 +963,18 @@ bool SceneRuntimeContext::SetNodeAlignment(std::string_view name, std::string al
         binding.origin = iterator->second->Translate();
         binding.scale  = iterator->second->Scale();
     }
-    binding.alignment = std::move(alignment);
+    binding.alignment   = std::move(alignment);
     binding.size_anchor = false;
     ApplyNodeTransform(name);
     return true;
 }
 
-bool SceneRuntimeContext::SetNodeTextAlignment(std::string_view name,
-                                               std::string      alignment,
+bool SceneRuntimeContext::SetNodeTextAlignment(std::string_view name, std::string alignment,
                                                const Eigen::Vector3f& origin) {
     const auto iterator = m_nodes.find(std::string(name));
     if (iterator == m_nodes.end() || iterator->second == nullptr) return false;
 
-    auto& binding = m_node_alignment[std::string(name)];
+    auto& binding       = m_node_alignment[std::string(name)];
     binding.alignment   = std::move(alignment);
     binding.origin      = origin;
     binding.scale       = iterator->second->Scale();
@@ -945,8 +1041,26 @@ std::optional<TextLayerState> SceneRuntimeContext::NodeTextState(std::string_vie
 bool SceneRuntimeContext::SetNodeText(std::string_view name, std::string text) {
     const auto iterator = m_text_layers.find(std::string(name));
     if (iterator == m_text_layers.end()) return false;
+    if (iterator->second.text() == text) return true;
+
+    const auto old_raster_size = iterator->second.rasterSize();
     iterator->second.SetText(std::move(text));
-    m_node_size[std::string(name)] = iterator->second.size();
+    const auto new_size               = iterator->second.size();
+    const auto new_raster_size        = iterator->second.rasterSize();
+    m_node_size[std::string(name)]    = new_size;
+    if (! SizeNearlyEqual(old_raster_size, new_raster_size, 1.0e-3f)) {
+        const auto node_iterator = m_nodes.find(std::string(name));
+        if (node_iterator != m_nodes.end() && node_iterator->second != nullptr &&
+            node_iterator->second->Mesh() != nullptr) {
+            auto* mesh = node_iterator->second->Mesh();
+            if (! SizeNearlyEqual(CardMeshSize(*mesh), new_raster_size, 1.0f)) {
+                ResizeCardMesh(
+                    *mesh,
+                    TextLayerRenderBoundsForRasterSize(iterator->second.state(), new_raster_size));
+                m_scene_graph_mutated = true;
+            }
+        }
+    }
     ApplyNodeTransform(name);
     return true;
 }
@@ -1001,12 +1115,12 @@ bool SceneRuntimeContext::SetNodeVideoTextureCurrentTime(std::string_view name, 
     if (iterator == m_node_video_textures.end()) return false;
     bool controlled = false;
     for (const auto& texture_key : iterator->second) {
-        auto& playback            = m_video_texture_playback[texture_key];
-        playback.absolute_seconds = playback.duration_seconds > 0.0
-                                        ? WrapSeconds(std::max(0.0, seconds),
-                                                      playback.duration_seconds)
-                                        : std::max(0.0, seconds);
-        controlled                = true;
+        auto& playback = m_video_texture_playback[texture_key];
+        playback.absolute_seconds =
+            playback.duration_seconds > 0.0
+                ? WrapSeconds(std::max(0.0, seconds), playback.duration_seconds)
+                : std::max(0.0, seconds);
+        controlled = true;
     }
     return controlled;
 }
@@ -1123,85 +1237,173 @@ void SceneRuntimeContext::DispatchMediaPlaybackChanged(std::string_view name, bo
     (void)playing;
 }
 
-namespace
-{
-template<typename ScriptDispatch>
-void DispatchToScripts(std::vector<wallpaper::ScriptedDynamicValue*>&               scripted_values,
-                       std::vector<std::unique_ptr<wallpaper::SceneScriptProgram>>& scene_scripts,
-                       const wallpaper::ScriptHostContext&                          host_context,
-                       ScriptDispatch&&                                             dispatch) {
-    for (auto* value : scripted_values) {
-        if (value != nullptr) dispatch(*value, host_context);
-    }
-    for (auto& script : scene_scripts) {
-        if (script != nullptr) dispatch(*script, host_context);
-    }
+bool SceneRuntimeContext::CursorHitsLayer(std::string_view name) const {
+    if (name.empty()) return true;
+    const auto node_iterator = m_nodes.find(std::string(name));
+    if (node_iterator == m_nodes.end() || node_iterator->second == nullptr) return false;
+    return HitTestNode(
+        *node_iterator->second, NodeSize(name), CursorHitTestWorldPosition(*m_host_context));
 }
-} // namespace
+
+bool SceneRuntimeContext::CursorHitsScriptLayer(const ScriptedDynamicValue& value) const {
+    return CursorHitsLayer(value.LayerName());
+}
+
+bool SceneRuntimeContext::CursorHitsScriptLayer(const SceneScriptProgram& script) const {
+    return CursorHitsLayer(script.LayerName());
+}
 
 void SceneRuntimeContext::DispatchCursorClick(int button) {
     m_host_context->cursor_button = button;
-    DispatchToScripts(
-        m_scripted_values, m_scene_scripts, *m_host_context, [](auto& target, const auto& host) {
-            target.DispatchCursorClick(host);
-        });
+    for (auto* value : m_scripted_values) {
+        if (value != nullptr) value->DispatchCursorClick(*m_host_context);
+    }
+    for (auto& script : m_scene_scripts) {
+        if (script.script != nullptr) script.script->DispatchCursorClick(*m_host_context);
+    }
 }
 
 void SceneRuntimeContext::DispatchCursorDown(int button) {
     m_host_context->cursor_button = button;
-    DispatchToScripts(
-        m_scripted_values, m_scene_scripts, *m_host_context, [](auto& target, const auto& host) {
-            target.DispatchCursorDown(host);
-        });
+    for (auto* value : m_scripted_values) {
+        if (value != nullptr) value->DispatchCursorDown(*m_host_context);
+    }
+    for (auto& script : m_scene_scripts) {
+        if (script.script != nullptr) script.script->DispatchCursorDown(*m_host_context);
+    }
 }
 
 void SceneRuntimeContext::DispatchCursorEnter() {
-    DispatchToScripts(
-        m_scripted_values, m_scene_scripts, *m_host_context, [](auto& target, const auto& host) {
-            target.DispatchCursorEnter(host);
-        });
+    for (auto* value : m_scripted_values) {
+        if (value != nullptr) value->DispatchCursorEnter(*m_host_context);
+    }
+    for (auto& script : m_scene_scripts) {
+        if (script.script != nullptr) script.script->DispatchCursorEnter(*m_host_context);
+    }
 }
 
 void SceneRuntimeContext::DispatchCursorLeave() {
-    DispatchToScripts(
-        m_scripted_values, m_scene_scripts, *m_host_context, [](auto& target, const auto& host) {
-            target.DispatchCursorLeave(host);
-        });
+    for (auto* value : m_scripted_values) {
+        if (value != nullptr) value->DispatchCursorLeave(*m_host_context);
+    }
+    for (auto& script : m_scene_scripts) {
+        if (script.script != nullptr) script.script->DispatchCursorLeave(*m_host_context);
+    }
 }
 
 void SceneRuntimeContext::DispatchCursorMove() {
-    DispatchToScripts(
-        m_scripted_values, m_scene_scripts, *m_host_context, [](auto& target, const auto& host) {
-            target.DispatchCursorMove(host);
-        });
+    for (auto* value : m_scripted_values) {
+        if (value != nullptr) value->DispatchCursorMove(*m_host_context);
+    }
+    for (auto& script : m_scene_scripts) {
+        if (script.script != nullptr) script.script->DispatchCursorMove(*m_host_context);
+    }
 }
 
 void SceneRuntimeContext::DispatchCursorUp(int button) {
     m_host_context->cursor_button = button;
-    DispatchToScripts(
-        m_scripted_values, m_scene_scripts, *m_host_context, [](auto& target, const auto& host) {
-            target.DispatchCursorUp(host);
-        });
+    for (auto* value : m_scripted_values) {
+        if (value != nullptr) value->DispatchCursorUp(*m_host_context);
+    }
+    for (auto& script : m_scene_scripts) {
+        if (script.script != nullptr) script.script->DispatchCursorUp(*m_host_context);
+    }
 }
 
 bool SceneRuntimeContext::DispatchCursorFrameEvents(bool cursor_was_in_window) {
     const bool cursor_in_window = m_host_context->cursor_in_window;
     if (cursor_in_window && ! cursor_was_in_window) {
-        DispatchCursorEnter();
+        for (auto* value : m_scripted_values) {
+            if (value != nullptr && CursorHitsScriptLayer(*value)) {
+                value->DispatchCursorEnter(*m_host_context);
+                m_scripted_value_cursor_inside[value] = true;
+            }
+        }
+        for (auto& script : m_scene_scripts) {
+            if (script.script == nullptr) continue;
+            script.cursor_inside = CursorHitsScriptLayer(*script.script);
+            if (script.cursor_inside) script.script->DispatchCursorEnter(*m_host_context);
+        }
     } else if (! cursor_in_window && cursor_was_in_window) {
-        DispatchCursorLeave();
+        for (auto* value : m_scripted_values) {
+            if (value == nullptr) continue;
+            if (m_scripted_value_cursor_inside[value]) {
+                value->DispatchCursorLeave(*m_host_context);
+            }
+            m_scripted_value_cursor_inside[value] = false;
+        }
+        for (auto& script : m_scene_scripts) {
+            if (script.script == nullptr) continue;
+            if (script.cursor_inside) script.script->DispatchCursorLeave(*m_host_context);
+            script.cursor_inside = false;
+        }
     }
 
-    if (cursor_in_window) DispatchCursorMove();
+    if (cursor_in_window) {
+        for (auto* value : m_scripted_values) {
+            if (value == nullptr) continue;
+            const bool now_inside = CursorHitsScriptLayer(*value);
+            bool&      was_inside = m_scripted_value_cursor_inside[value];
+            if (now_inside != was_inside) {
+                if (now_inside) {
+                    value->DispatchCursorEnter(*m_host_context);
+                } else {
+                    value->DispatchCursorLeave(*m_host_context);
+                }
+                was_inside = now_inside;
+            }
+            if (now_inside) value->DispatchCursorMove(*m_host_context);
+        }
+        for (auto& script : m_scene_scripts) {
+            if (script.script == nullptr) continue;
+            const bool now_inside = CursorHitsScriptLayer(*script.script);
+            if (now_inside != script.cursor_inside) {
+                if (now_inside) {
+                    script.script->DispatchCursorEnter(*m_host_context);
+                } else {
+                    script.script->DispatchCursorLeave(*m_host_context);
+                }
+                script.cursor_inside = now_inside;
+            }
+            if (now_inside) script.script->DispatchCursorMove(*m_host_context);
+        }
+    }
 
     for (int button = 0; button < 32; ++button) {
         const uint32_t mask = 1u << static_cast<uint32_t>(button);
         if (cursor_in_window && (m_host_context->mouse_buttons_pressed & mask) != 0) {
-            DispatchCursorDown(button);
-            DispatchCursorClick(button);
+            m_host_context->cursor_button = button;
+            for (auto* value : m_scripted_values) {
+                if (value == nullptr || ! CursorHitsScriptLayer(*value)) continue;
+                value->DispatchCursorDown(*m_host_context);
+                value->DispatchCursorClick(*m_host_context);
+            }
+            for (auto& script : m_scene_scripts) {
+                if (script.script == nullptr || ! CursorHitsScriptLayer(*script.script)) continue;
+                script.script->DispatchCursorDown(*m_host_context);
+                script.script->DispatchCursorClick(*m_host_context);
+            }
         }
         if ((m_host_context->mouse_buttons_released & mask) != 0) {
-            DispatchCursorUp(button);
+            m_host_context->cursor_button = button;
+            for (auto* value : m_scripted_values) {
+                if (value == nullptr) continue;
+                if (cursor_in_window) {
+                    if (! CursorHitsScriptLayer(*value)) continue;
+                } else if (! value->LayerName().empty()) {
+                    continue;
+                }
+                value->DispatchCursorUp(*m_host_context);
+            }
+            for (auto& script : m_scene_scripts) {
+                if (script.script == nullptr) continue;
+                if (cursor_in_window) {
+                    if (! CursorHitsScriptLayer(*script.script)) continue;
+                } else if (! script.script->LayerName().empty()) {
+                    continue;
+                }
+                script.script->DispatchCursorUp(*m_host_context);
+            }
         }
     }
 
@@ -1214,7 +1416,9 @@ void SceneRuntimeContext::DispatchMediaThumbnailChanged(const Eigen::Vector3f& p
         if (value != nullptr) value->DispatchMediaThumbnailChanged(primary_color, text_color);
     }
     for (auto& script : m_scene_scripts) {
-        if (script != nullptr) script->DispatchMediaThumbnailChanged(primary_color, text_color);
+        if (script.script != nullptr) {
+            script.script->DispatchMediaThumbnailChanged(primary_color, text_color);
+        }
     }
 }
 
@@ -1231,7 +1435,7 @@ void SceneRuntimeContext::DispatchMediaEventJson(std::string_view event_json) {
         if (value != nullptr) value->DispatchMediaEventJson(event_json);
     }
     for (auto& script : m_scene_scripts) {
-        if (script != nullptr) script->DispatchMediaEventJson(event_json);
+        if (script.script != nullptr) script.script->DispatchMediaEventJson(event_json);
     }
 }
 

@@ -217,18 +217,22 @@ bool ProbeHasAudioStream(FfmpegInputSource& input_source, std::string* error)
 
 class FfmpegSoundStream final : public SoundStream {
 public:
-    explicit FfmpegSoundStream(std::filesystem::path media_path)
-        : FfmpegSoundStream(std::make_unique<PathFfmpegInputSource>(std::move(media_path)))
+    explicit FfmpegSoundStream(std::filesystem::path media_path, Options options = {})
+        : FfmpegSoundStream(std::make_unique<PathFfmpegInputSource>(std::move(media_path)),
+                            options)
     {
     }
 
-    explicit FfmpegSoundStream(std::shared_ptr<fs::IBinaryStream> stream)
-        : FfmpegSoundStream(std::make_unique<StreamFfmpegInputSource>(std::move(stream)))
+    explicit FfmpegSoundStream(std::shared_ptr<fs::IBinaryStream> stream, Options options = {})
+        : FfmpegSoundStream(std::make_unique<StreamFfmpegInputSource>(std::move(stream)),
+                            options)
     {
     }
 
-    explicit FfmpegSoundStream(std::unique_ptr<FfmpegInputSource> input_source)
-        : m_input_source(std::move(input_source))
+    explicit FfmpegSoundStream(std::unique_ptr<FfmpegInputSource> input_source,
+                               Options                           options = {})
+        : m_input_source(std::move(input_source)),
+          m_options(options)
     {
     }
 
@@ -423,6 +427,7 @@ private:
         while (true) {
             const int read_result = av_read_frame(m_format_context, m_packet);
             if (read_result == AVERROR_EOF) {
+                if (!m_options.loop) return false;
                 if (!seekToStart()) return false;
                 continue;
             }
@@ -451,6 +456,7 @@ private:
                 const int receive_result = avcodec_receive_frame(m_codec_context, m_frame);
                 if (receive_result == AVERROR(EAGAIN)) break;
                 if (receive_result == AVERROR_EOF) {
+                    if (!m_options.loop) return false;
                     if (!seekToStart()) return false;
                     break;
                 }
@@ -505,6 +511,7 @@ private:
 
 private:
     std::unique_ptr<FfmpegInputSource> m_input_source;
+    Options                            m_options {};
     Desc                               m_desc {};
     bool                               m_open { false };
     AVFormatContext*                   m_format_context { nullptr };
@@ -522,7 +529,8 @@ private:
 } // namespace
 
 std::unique_ptr<SoundStream> CreateFfmpegSoundStream(const std::filesystem::path& media_path,
-                                                     std::string* error)
+                                                     std::string* error,
+                                                     SoundStream::Options options)
 {
     if (media_path.empty()) {
         SetError(error, "pure-video audio path must not be empty");
@@ -539,11 +547,12 @@ std::unique_ptr<SoundStream> CreateFfmpegSoundStream(const std::filesystem::path
         return nullptr;
     }
 
-    return std::make_unique<FfmpegSoundStream>(media_path);
+    return std::make_unique<FfmpegSoundStream>(media_path, options);
 }
 
 std::unique_ptr<SoundStream> CreateFfmpegSoundStream(std::shared_ptr<fs::IBinaryStream> stream,
-                                                     std::string* error)
+                                                     std::string* error,
+                                                     SoundStream::Options options)
 {
     if (stream == nullptr) {
         SetError(error, "VFS audio stream must not be null");
@@ -555,7 +564,7 @@ std::unique_ptr<SoundStream> CreateFfmpegSoundStream(std::shared_ptr<fs::IBinary
         return nullptr;
     }
 
-    return std::make_unique<FfmpegSoundStream>(std::move(input_source));
+    return std::make_unique<FfmpegSoundStream>(std::move(input_source), options);
 }
 
 } // namespace wallpaper::audio

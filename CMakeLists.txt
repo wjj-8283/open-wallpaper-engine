@@ -31,13 +31,14 @@ include_directories(SYSTEM third_party)
 add_subdirectory(third_party)
 
 link_libraries(Eigen3::Eigen)
-add_subdirectory(src)
-
 
 # Test suite — gated by BUILD_TESTS. Include CTest so
 # gtest_discover_tests / add_test inside tests/ register with ctest.
 set(_wescene_build_tests_default ${_wescene_is_top_level})
 option(BUILD_TESTS "Build the wescene-renderer test suite" ${_wescene_build_tests_default})
+
+add_subdirectory(src)
+
 if(BUILD_TESTS)
     include(CTest)
     add_subdirectory(tests)

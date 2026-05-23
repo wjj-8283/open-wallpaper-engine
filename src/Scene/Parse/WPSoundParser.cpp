@@ -7,21 +7,18 @@
 #include "wpscene/WPSoundObject.h"
 
 #include <algorithm>
+#include <random>
 #include <string>
 #include <string_view>
 #include <utility>
 
 using namespace wallpaper;
 
-namespace
-{
-
-PlaybackMode ToPlaybackMode(std::string_view value) {
+PlaybackMode wallpaper::ParseSoundPlaybackMode(std::string_view value) {
+    if (value == "single") return PlaybackMode::OneShot;
     if (value == "random") return PlaybackMode::Random;
     return PlaybackMode::Loop;
 }
-
-} // namespace
 
 WPSoundStream::WPSoundStream(const std::vector<std::string>& paths, fs::VFS& vfs, Config config)
     : WPSoundStream(
@@ -31,7 +28,9 @@ WPSoundStream::WPSoundStream(const std::vector<std::string>& paths, fs::VFS& vfs
               for (const auto& path : paths) {
                   factories.emplace_back([&vfs, path](const Desc& desc) {
                       return std::shared_ptr<audio::SoundStream>(
-                          audio::CreateSoundStream(vfs.Open("/assets/" + path), desc));
+                          audio::CreateSoundStream(vfs.Open("/assets/" + path),
+                                                   desc,
+                                                   { .loop = false }));
                   });
               }
               return factories;
@@ -58,6 +57,7 @@ uint64_t WPSoundStream::NextPcmData(void* data, uint32_t frame_count) {
     if (m_rewind_requested.exchange(false, std::memory_order_relaxed)) {
         m_cur_active.reset();
         m_cur_index = 0;
+        m_finished.store(false, std::memory_order_relaxed);
     }
 
     if (! m_cur_active) {
@@ -71,8 +71,9 @@ uint64_t WPSoundStream::NextPcmData(void* data, uint32_t frame_count) {
 
     uint64_t frames_read = m_cur_active->NextPcmData(data, frame_count);
     if (frames_read == 0) {
-        if (m_config.mode != PlaybackMode::Loop) {
+        if (m_config.mode == PlaybackMode::OneShot) {
             m_playing.store(false, std::memory_order_relaxed);
+            m_finished.store(true, std::memory_order_relaxed);
             return frame_count;
         }
         Switch();
@@ -96,12 +97,18 @@ void WPSoundStream::PassDesc(const Desc& desc) {
     if (m_cur_active != nullptr) m_cur_active->PassDesc(desc);
 }
 
-void WPSoundStream::Play() { m_playing.store(true, std::memory_order_relaxed); }
+void WPSoundStream::Play() {
+    if (m_finished.exchange(false, std::memory_order_relaxed)) {
+        m_rewind_requested.store(true, std::memory_order_relaxed);
+    }
+    m_playing.store(true, std::memory_order_relaxed);
+}
 
 void WPSoundStream::Pause() { m_playing.store(false, std::memory_order_relaxed); }
 
 void WPSoundStream::Stop() {
     m_playing.store(false, std::memory_order_relaxed);
+    m_finished.store(false, std::memory_order_relaxed);
     m_rewind_requested.store(true, std::memory_order_relaxed);
 }
 
@@ -129,6 +136,11 @@ void WPSoundStream::Switch() {
 }
 
 std::size_t WPSoundStream::LoopIndex() {
+    if (m_config.mode == PlaybackMode::Random) {
+        std::uniform_int_distribution<std::size_t> distribution(0, m_stream_factories.size() - 1);
+        return distribution(m_random);
+    }
+
     const std::size_t index = m_cur_index;
     m_cur_index++;
     if (m_cur_index == m_stream_factories.size()) m_cur_index = 0;
@@ -142,7 +154,7 @@ void WPSoundParser::Parse(const wpscene::WPSoundObject& obj, fs::VFS& vfs, audio
                                    .volume      = audio::ClampVolume(obj.volume),
                                    .muted       = obj.muted,
                                    .startsilent = obj.startsilent,
-                                   .mode        = ToPlaybackMode(obj.playbackmode) };
+                                   .mode        = ParseSoundPlaybackMode(obj.playbackmode) };
 
     auto stream = std::make_shared<WPSoundStream>(obj.sound, vfs, config);
     if (runtime != nullptr) {

@@ -174,9 +174,10 @@ private:
 
 std::unique_ptr<SoundStream>
 wallpaper::audio::CreateSoundStream(std::shared_ptr<wallpaper::fs::IBinaryStream> stream,
-                                    const SoundStream::Desc&                      desc) {
+                                    const SoundStream::Desc&                      desc,
+                                    SoundStream::Options options) {
     std::string error;
-    auto        sound_stream = CreateFfmpegSoundStream(std::move(stream), &error);
+    auto        sound_stream = CreateFfmpegSoundStream(std::move(stream), &error, options);
     if (sound_stream == nullptr) {
         LOG_ERROR("failed to create FFmpeg sound stream: %s", error.c_str());
         return nullptr;

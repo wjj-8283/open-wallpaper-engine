@@ -157,6 +157,63 @@ TEST(FfmpegSoundStreamTest, VfsBackedStreamDecodesPcm)
     }));
 }
 
+TEST(FfmpegSoundStreamTest, NonLoopingVfsStreamReportsEndOfFile)
+{
+    auto stream = std::make_shared<MemoryBinaryStream>(MakeWavS16Mono(12'000, 16));
+    std::string error;
+
+    auto sound = CreateFfmpegSoundStream(stream, &error, { .loop = false });
+
+    ASSERT_NE(sound, nullptr) << error;
+    sound->PassDesc({ .channels = 1, .sampleRate = 12'000 });
+
+    std::array<float, 64> output {};
+    EXPECT_GT(sound->NextPcmData(output.data(), 16), 0u);
+
+    bool reached_eof = false;
+    for (int attempt = 0; attempt < 8; ++attempt) {
+        std::fill(output.begin(), output.end(), 1.0f);
+        const auto frames = sound->NextPcmData(output.data(), 16);
+        if (frames == 0u) {
+            reached_eof = true;
+            EXPECT_TRUE(std::all_of(output.begin(), output.begin() + 16, [](float sample) {
+                return sample == 0.0f;
+            }));
+            break;
+        }
+    }
+
+    EXPECT_TRUE(reached_eof);
+}
+
+TEST(FfmpegSoundStreamTest, DefaultVfsStreamLoopsForVideoWallpaperAudio)
+{
+    auto stream = std::make_shared<MemoryBinaryStream>(MakeWavS16Mono(12'000, 16));
+    std::string error;
+
+    auto sound = CreateFfmpegSoundStream(stream, &error);
+
+    ASSERT_NE(sound, nullptr) << error;
+    sound->PassDesc({ .channels = 1, .sampleRate = 12'000 });
+
+    std::array<float, 16> output {};
+    bool                  produced_after_first_read = false;
+    EXPECT_GT(sound->NextPcmData(output.data(), 16), 0u);
+    for (int attempt = 0; attempt < 8; ++attempt) {
+        std::fill(output.begin(), output.end(), 0.0f);
+        const auto frames = sound->NextPcmData(output.data(), 16);
+        if (frames > 0u &&
+            std::any_of(output.begin(), output.end(), [](float sample) {
+                return sample != 0.0f;
+            })) {
+            produced_after_first_read = true;
+            break;
+        }
+    }
+
+    EXPECT_TRUE(produced_after_first_read);
+}
+
 TEST(FfmpegSoundStreamTest, InvalidVfsStreamFailsGracefully)
 {
     auto stream = std::make_shared<MemoryBinaryStream>(std::vector<uint8_t> { 1, 2, 3, 4 });

@@ -11,6 +11,7 @@ ScriptedDynamicValue::ScriptedDynamicValue(
     std::map<std::string, DynamicValueUniquePtr> script_properties, DynamicValue base_value,
     ScriptedValueSemantic semantic)
     : m_runtime(&runtime),
+      m_current_layer_name(std::move(current_layer_name)),
       m_script_properties(std::move(script_properties)),
       m_base_value(std::move(base_value)),
       m_semantic(semantic) {
@@ -27,7 +28,7 @@ ScriptedDynamicValue::ScriptedDynamicValue(
                                       : PropertyScriptValueSemantic::Generic;
     m_program                   = m_runtime->scriptEngine().CreatePropertyScriptProgram(m_runtime,
                                                                       std::move(script_source),
-                                                                      std::move(current_layer_name),
+                                                                      m_current_layer_name,
                                                                       std::move(raw_properties),
                                                                       m_base_value,
                                                                       m_runtime->hostContext(),

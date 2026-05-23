@@ -22,6 +22,9 @@ public:
         uint32_t channels;
         uint32_t sampleRate;
     };
+    struct Options {
+        bool loop { true };
+    };
 
 public:
     SoundStream()          = default;
@@ -31,7 +34,8 @@ public:
     virtual void     PassDesc(const Desc&)                         = 0;
 };
 std::unique_ptr<SoundStream> CreateSoundStream(std::shared_ptr<fs::IBinaryStream>,
-                                               const SoundStream::Desc&);
+                                               const SoundStream::Desc&,
+                                               SoundStream::Options options = {});
 
 class SoundManager : NoCopy, NoMove {
 public:
