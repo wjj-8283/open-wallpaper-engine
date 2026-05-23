@@ -410,6 +410,37 @@ void recordMacro(const std::string& trimmed, std::map<std::string, int64_t>& mac
     return source;
 }
 
+[[nodiscard]] std::string RewriteScalarTextureSampleInitializers(std::string source)
+{
+    const std::regex float_texture_init_re(
+        R"(^(\s*float\s+[A-Za-z_]\w*\s*=\s*)((?:texSample2D|texSample2DLod|texture|textureLod)\s*\(.+\))(\s*;\r?)$)",
+        std::regex::ECMAScript);
+
+    wallpaper::usize search_pos = 0;
+    while (search_pos < source.size()) {
+        const wallpaper::usize line_end = source.find('\n', search_pos);
+        const wallpaper::usize slice_end = line_end == std::string::npos ? source.size() : line_end;
+        std::string line = source.substr(search_pos, slice_end - search_pos);
+        std::smatch match;
+
+        if (std::regex_match(line, match, float_texture_init_re)) {
+            const std::string rhs = trimCopy(match[2].str());
+            const wallpaper::usize open_paren = rhs.find('(');
+            const wallpaper::usize close_paren = FindMatchingParen(rhs, open_paren);
+            if (close_paren == rhs.size() - 1) {
+                line = match[1].str() + rhs + ".r" + match[3].str();
+                source.replace(search_pos, slice_end - search_pos, line);
+                search_pos += line.size();
+                continue;
+            }
+        }
+
+        search_pos = line_end == std::string::npos ? source.size() : line_end + 1;
+    }
+
+    return source;
+}
+
 [[nodiscard]] std::vector<std::string> SplitTopLevelArgs(std::string_view source);
 
 [[nodiscard]] std::string RewriteMultiVectorScalarDeclarations(std::string source)
@@ -2192,6 +2223,10 @@ StructuredStageSource LegalizeStageSource(
         "RewriteTextureInitializerCastVec3",
         std::move(result.source),
         [](std::string source) { return RewriteTextureInitializerCast(std::move(source), "vec3"); });
+    result.source = ApplyLegalizerPass(
+        "RewriteScalarTextureSampleInitializers",
+        std::move(result.source),
+        [](std::string source) { return RewriteScalarTextureSampleInitializers(std::move(source)); });
     result.source = ApplyLegalizerPass(
         "RewriteMultiVectorScalarDeclarations",
         std::move(result.source),
