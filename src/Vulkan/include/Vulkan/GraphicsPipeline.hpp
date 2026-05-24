@@ -16,6 +16,8 @@ struct PipelineParameters {
     std::vector<vvk::DescriptorSetLayout> descriptor_layouts;
 };
 
+void ResetPipelineParameters(PipelineParameters&);
+
 struct DescriptorSetInfo {
     bool push_descriptor { false };
 

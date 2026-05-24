@@ -2,6 +2,8 @@
 #include "Vulkan/GraphicsPipeline.hpp"
 #include "Vulkan/SampleCount.hpp"
 #include "Vulkan/TextureCache.hpp"
+#include "VulkanRender/Resource.hpp"
+#include "VulkanRender/FinPass.hpp"
 #include "VulkanRender/PassCommon.hpp"
 
 #include <cassert>
@@ -143,6 +145,31 @@ void graphicsPipelineStoresRequestedSampleCount() {
     pipeline.toDefault();
     assert(pipeline.sampleCount() == VK_SAMPLE_COUNT_1_BIT);
 }
+
+void pipelineParametersResetDropsDescriptorLayouts() {
+    wallpaper::vulkan::PipelineParameters parameters;
+
+    parameters.descriptor_layouts.emplace_back();
+    assert(parameters.descriptor_layouts.size() == 1);
+
+    wallpaper::vulkan::ResetPipelineParameters(parameters);
+
+    assert(parameters.descriptor_layouts.empty());
+    assert(! parameters.handle);
+    assert(! parameters.layout);
+    assert(! parameters.pass);
+}
+
+void finPassDestroyResetsPersistentPipelineState() {
+    wallpaper::vulkan::FinPass pass(wallpaper::vulkan::FinPass::Desc {});
+    pass.pipelineForTests().descriptor_layouts.emplace_back();
+    assert(pass.pipelineForTests().descriptor_layouts.size() == 1);
+
+    wallpaper::vulkan::RenderingResources resources {};
+    pass.destroyForTests(resources);
+
+    assert(pass.pipelineForTests().descriptor_layouts.empty());
+}
 } // namespace
 
 int main() {
@@ -159,5 +186,7 @@ int main() {
     gpuAllocationSampleCountUsesRequestedSamplesForMsaaSidecars();
     gpuAllocationSampleCountKeepsDepthSingleSampleInThisSlice();
     graphicsPipelineStoresRequestedSampleCount();
+    pipelineParametersResetDropsDescriptorLayouts();
+    finPassDestroyResetsPersistentPipelineState();
     return 0;
 }

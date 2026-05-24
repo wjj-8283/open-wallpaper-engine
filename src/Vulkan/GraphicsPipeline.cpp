@@ -41,6 +41,13 @@ inline std::optional<vvk::ShaderModule> CreateShaderModule(const vvk::Device& de
 GraphicsPipeline::GraphicsPipeline() { toDefault(); }
 GraphicsPipeline::~GraphicsPipeline() {}
 
+void wallpaper::vulkan::ResetPipelineParameters(PipelineParameters& pipeline) {
+    pipeline.handle.reset();
+    pipeline.layout.reset();
+    pipeline.pass.reset();
+    pipeline.descriptor_layouts.clear();
+}
+
 void GraphicsPipeline::toDefault() {
     m_input_bind_descriptions.clear();
     m_input_attr_descriptions.clear();
@@ -163,6 +170,8 @@ GraphicsPipeline& GraphicsPipeline::setSampleCount(VkSampleCountFlagBits sample_
 
 bool GraphicsPipeline::create(const Device& device, vvk::RenderPass& pass,
                               PipelineParameters& pipeline) {
+    ResetPipelineParameters(pipeline);
+
     VkPipelineDynamicStateCreateInfo dynamic_info {
         .sType             = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO,
         .pNext             = nullptr,

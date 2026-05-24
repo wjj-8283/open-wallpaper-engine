@@ -248,11 +248,12 @@ target_include_directories(vulkan_render_batch_planner_smoke PRIVATE .)
 target_compile_features(vulkan_render_batch_planner_smoke PRIVATE cxx_std_20)
 add_test(NAME vulkan_render_batch_planner_smoke COMMAND vulkan_render_batch_planner_smoke)
 add_executable(vulkan_sample_count_smoke vulkan_sample_count_smoke.cpp)
-target_link_libraries(vulkan_sample_count_smoke PRIVATE ${PROJECT_NAME} wpVulkanRender wpVulkan wpScene GTest::gtest_main)
+target_link_libraries(vulkan_sample_count_smoke PRIVATE ${PROJECT_NAME} wpVulkanRender wpVulkan wpScene wpRGraph GTest::gtest_main)
 target_include_directories(vulkan_sample_count_smoke PRIVATE
     .
     ${CMAKE_SOURCE_DIR}/src
     ${CMAKE_SOURCE_DIR}/src/Vulkan/include
+    ${CMAKE_SOURCE_DIR}/src/Scene/RenderGraph/include
     ${CMAKE_SOURCE_DIR}/src/Scene/VulkanRender
     ${CMAKE_SOURCE_DIR}/src/Scene/VulkanRender/include
     ${CMAKE_SOURCE_DIR}/src/Utils/include

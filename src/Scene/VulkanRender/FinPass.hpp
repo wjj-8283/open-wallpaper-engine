@@ -47,7 +47,14 @@ public:
     void execute(const Device&, RenderingResources&) override;
     void destory(const Device&, RenderingResources&) override;
 
+#ifdef WESCENE_BUILD_TESTS
+    PipelineParameters& pipelineForTests() { return m_desc.pipeline; }
+    void                destroyForTests(RenderingResources& rr) { resetPreparedState(rr); }
+#endif
+
 private:
+    void resetPreparedState(RenderingResources&);
+
     struct CachedFramebuffer {
         VkImageView      view {};
         VkRenderPass     render_pass {};

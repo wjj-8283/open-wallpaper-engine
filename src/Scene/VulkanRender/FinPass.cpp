@@ -330,9 +330,15 @@ void FinPass::execute(const Device& device, RenderingResources& rr) {
                             imb);
     }
 }
-void FinPass::destory(const Device&, RenderingResources& rr) {
+void FinPass::resetPreparedState(RenderingResources& rr) {
     setPrepared(false);
     clearReleaseTexs();
     m_framebuffers.clear();
-    rr.vertex_buf->unallocateSubRef(m_desc.vertex_buf);
+    ResetPipelineParameters(m_desc.pipeline);
+    if (rr.vertex_buf != nullptr) {
+        rr.vertex_buf->unallocateSubRef(m_desc.vertex_buf);
+    }
+    m_desc.vertex_buf = {};
 }
+
+void FinPass::destory(const Device&, RenderingResources& rr) { resetPreparedState(rr); }

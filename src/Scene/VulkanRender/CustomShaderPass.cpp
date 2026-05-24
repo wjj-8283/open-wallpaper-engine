@@ -820,14 +820,34 @@ void CustomShaderPass::execute(const Device& device, RenderingResources& rr) {
 }
 
 void CustomShaderPass::destory(const Device&, RenderingResources& rr) {
+    setPrepared(false);
+    clearReleaseTexs();
     m_desc.update_op = {};
     {
         auto& buf = m_desc.dyn_vertex ? rr.dyn_buf : rr.vertex_buf;
         for (auto& bufref : m_desc.vertex_bufs) {
             buf->unallocateSubRef(bufref);
         }
+        buf->unallocateSubRef(m_desc.index_buf);
     }
+    m_desc.vertex_bufs.clear();
+    m_desc.index_buf = {};
     rr.dyn_buf->unallocateSubRef(m_desc.ubo_buf);
+    m_desc.ubo_buf = {};
+    m_desc.fb.reset();
+    m_desc.vk_textures.clear();
+    m_desc.vk_tex_binding.clear();
+    m_desc.vk_texture_image_keys.clear();
+    m_desc.vk_output = {};
+    m_desc.vk_output_msaa = {};
+    m_desc.video_textures.clear();
+    m_desc.draw_count = 0;
+    m_desc.draw_ranges.clear();
+    m_desc.uniform_block.reset();
+    m_desc.blending = false;
+    m_desc.alpha_to_coverage = false;
+    m_desc.uploaded_mesh_dirty_generation = std::numeric_limits<uint64_t>::max();
+    ResetPipelineParameters(m_desc.pipeline);
 }
 
 void CustomShaderPass::setDescTex(u32 index, std::string_view tex_key) {
