@@ -18,6 +18,7 @@
 #include "Text/SystemFontResolver.hpp"
 #include "Text/TextLayer.hpp"
 #include "Vulkan/Shader.hpp"
+#include "Vulkan/ShaderComp.hpp"
 #include "WPSceneParser.hpp"
 #include "WPPkgFs.hpp"
 
@@ -289,44 +290,54 @@ bool ReflectShaderDescriptors(const SceneShader& shader, vulkan::ShaderReflected
 }
 
 SceneShader CompileTextShaderForSpirvReflection(fs::VFS& vfs) {
+    (void)vfs;
     std::string vertex_src =
-        "uniform mat4 g_ModelViewProjectionMatrix;\n"
-        "in vec3 a_Position;\n"
-        "in vec2 a_TexCoord;\n"
-        "out vec2 v_TexCoord;\n"
+        "#version 450\n"
+        "layout(location = 0) in vec3 a_Position;\n"
+        "layout(binding = 1) uniform GlobalUniforms {\n"
+        "  mat4 g_ModelViewProjectionMatrix;\n"
+        "};\n"
         "void main() {\n"
         "  gl_Position = g_ModelViewProjectionMatrix * vec4(a_Position, 1.0);\n"
-        "  v_TexCoord = a_TexCoord;\n"
         "}\n";
-    std::string fragment_src = "uniform sampler2D g_Texture0;\n"
-                               "in vec2 v_TexCoord;\n"
+    std::string fragment_src = "#version 450\n"
+                               "layout(binding = 0) uniform sampler2D g_Texture0;\n"
+                               "layout(location = 0) out vec4 glOutColor;\n"
                                "void main() {\n"
-                               "  gl_FragColor = texture(g_Texture0, v_TexCoord);\n"
+                               "  glOutColor = texture(g_Texture0, vec2(0.5));\n"
                                "}\n";
 
-    WPShaderInfo                 shader_info;
-    std::vector<WPShaderTexInfo> tex_infos(1);
-    tex_infos[0].enabled = true;
-    std::array units {
-        WPShaderUnit {
-            .stage           = ShaderType::VERTEX,
-            .src             = std::move(vertex_src),
-            .preprocess_info = {},
+    std::vector<vulkan::ShaderCompUnit> units {
+        vulkan::ShaderCompUnit {
+            .stage = EShLangVertex,
+            .src   = std::move(vertex_src),
         },
-        WPShaderUnit {
-            .stage           = ShaderType::FRAGMENT,
-            .src             = std::move(fragment_src),
-            .preprocess_info = {},
+        vulkan::ShaderCompUnit {
+            .stage = EShLangFragment,
+            .src   = std::move(fragment_src),
         },
     };
 
+    vulkan::ShaderCompOpt opt;
+    opt.client_ver             = glslang::EShTargetVulkan_1_1;
+    opt.auto_map_bindings      = true;
+    opt.auto_map_locations     = true;
+    opt.relaxed_errors_glsl    = true;
+    opt.relaxed_rules_vulkan   = true;
+    opt.suppress_warnings_glsl = true;
+
+    WPShaderParser::InitGlslang();
+    std::vector<vulkan::Uni_ShaderSpv> compiled;
+    const bool ok = vulkan::CompileAndLinkShaderUnits(units, opt, compiled);
+    WPShaderParser::FinalGlslang();
+    if (! ok || compiled.size() != 2u) return {};
+
     SceneShader shader;
     shader.name = "text";
-    if (! WPShaderParser::CompileToSpv(
-            "text-malformed-rust-reflection-fallback", units, shader.codes, vfs, &shader_info, tex_infos)) {
-        return {};
+    shader.codes.reserve(compiled.size());
+    for (auto& spv : compiled) {
+        shader.codes.emplace_back(std::move(spv->spirv));
     }
-    shader.default_uniforms = shader_info.svs;
     return shader;
 }
 

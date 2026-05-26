@@ -44,11 +44,6 @@ struct WPShaderUnit {
     WPPreprocessorInfo preprocess_info;
 };
 
-void ParseWPShaderAnnotations(
-    std::string_view source,
-    WPShaderInfo* shader_info,
-    std::span<const WPShaderTexInfo> tex_infos);
-
 struct ShaderStartupMetrics {
     uint64_t cache_hits { 0 };
     uint64_t cache_misses { 0 };
@@ -66,20 +61,11 @@ class WPShaderParser {
 public:
     static constexpr uint32_t kShaderPipelineRevision = 2;
 
-    static std::string PreShaderSrc(fs::VFS&, const std::string& src, WPShaderInfo* pWPShaderInfo,
-                                    const std::vector<WPShaderTexInfo>& texs);
-
-    static std::string PreShaderHeader(const std::string& src, const Combos& combos, ShaderType);
-
     static void InitGlslang();
     static void FinalGlslang();
 
     static void                 ResetStartupMetrics();
     static ShaderStartupMetrics GetStartupMetrics();
-
-    static bool CompileToSpv(std::string_view         scene_id, std::span<WPShaderUnit>,
-                             std::vector<ShaderCode>& spvs, fs::VFS&, WPShaderInfo*,
-                             std::span<const WPShaderTexInfo>);
 
     static bool CompileToSpvRust(std::string_view scene_id, std::string_view shader_name,
                                   std::span<WPShaderUnit>, std::vector<ShaderCode>& spvs,

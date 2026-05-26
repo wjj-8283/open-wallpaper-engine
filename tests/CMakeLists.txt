@@ -134,26 +134,6 @@ gtest_discover_tests(
     PROPERTIES TIMEOUT 30
     DISCOVERY_TIMEOUT 60
 )
-add_executable(shader_lex_tests shader_lex_tests.cpp)
-target_link_libraries(shader_lex_tests PRIVATE ${PROJECT_NAME} GTest::gtest_main)
-target_include_directories(shader_lex_tests PRIVATE . ${CMAKE_SOURCE_DIR}/src)
-target_compile_features(shader_lex_tests PRIVATE cxx_std_20)
-gtest_discover_tests(
-    shader_lex_tests
-    TEST_PREFIX shader_lex_tests.
-    PROPERTIES TIMEOUT 30
-    DISCOVERY_TIMEOUT 60
-)
-add_executable(wpshader_parse_tests wpshader_parse_tests.cpp)
-target_link_libraries(wpshader_parse_tests PRIVATE ${PROJECT_NAME} wpScene GTest::gtest_main)
-target_include_directories(wpshader_parse_tests PRIVATE . ${CMAKE_SOURCE_DIR}/src)
-target_compile_features(wpshader_parse_tests PRIVATE cxx_std_20)
-gtest_discover_tests(
-    wpshader_parse_tests
-    TEST_PREFIX wpshader_parse_tests.
-    PROPERTIES TIMEOUT 30
-    DISCOVERY_TIMEOUT 60
-)
 add_executable(shader_preprocessor_compat_test shader_preprocessor_compat_test.cpp)
 target_link_libraries(shader_preprocessor_compat_test PRIVATE ${PROJECT_NAME} wpFs wpScene wpVulkan GTest::gtest_main)
 target_include_directories(shader_preprocessor_compat_test PRIVATE .)

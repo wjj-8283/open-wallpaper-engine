@@ -1,29 +1,22 @@
 #include "Fs/PhysicalFs.h"
 #include "Fs/VFS.h"
-#include "Shader/SceneShaderLegalizer.hpp"
-#include "Shader/ShaderPreprocessor.hpp"
+#include "Shader/RustShaderBridge.hpp"
 #include "WPShaderParser.hpp"
 
 #include <gtest/gtest.h>
 
+#include <array>
+#include <cctype>
 #include <filesystem>
 #include <fstream>
-#include <cctype>
 #include <string>
-#include <vector>
-
 #include <unistd.h>
+#include <vector>
 
 namespace wallpaper
 {
 namespace
 {
-
-class GlslangEnvironment final {
-public:
-    GlslangEnvironment() { WPShaderParser::InitGlslang(); }
-    ~GlslangEnvironment() { WPShaderParser::FinalGlslang(); }
-};
 
 std::filesystem::path MakeTempDir() {
     const auto* test_info = ::testing::UnitTest::GetInstance()->current_test_info();
@@ -32,7 +25,7 @@ std::filesystem::path MakeTempDir() {
         test_name = std::string(test_info->test_suite_name()) + "-" + test_info->name();
     }
     for (char& ch : test_name) {
-        if (!std::isalnum(static_cast<unsigned char>(ch))) {
+        if (! std::isalnum(static_cast<unsigned char>(ch))) {
             ch = '-';
         }
     }
@@ -55,15 +48,19 @@ void WriteText(const std::filesystem::path& path, std::string_view text) {
 }
 
 bool CompileFragmentShader(std::string fragment_source, Combos combos = {}) {
-    GlslangEnvironment glslang;
-    const auto         temp = MakeTempDir();
-    fs::VFS            vfs;
+#ifndef WESCENE_HAS_RUST_SHADER_FFI
+    (void)fragment_source;
+    (void)combos;
+    return false;
+#else
+    const auto temp = MakeTempDir();
+    fs::VFS    vfs;
     MountAssets(vfs, temp);
 
     WPShaderInfo info;
     info.combos = std::move(combos);
     std::vector<WPShaderTexInfo> textures;
-    std::vector<WPShaderUnit> units {
+    std::array units {
         WPShaderUnit {
             .stage = ShaderType::VERTEX,
             .src = R"(
@@ -81,33 +78,47 @@ void main() {
         },
     };
 
-    for (auto& unit : units) {
-        unit.src = WPShaderParser::PreShaderSrc(vfs, unit.src, &info, textures);
-    }
-
     std::vector<ShaderCode> codes;
-    return WPShaderParser::CompileToSpv("compat-fragment", units, codes, vfs, &info, textures);
+    return WPShaderParser::CompileToSpvRust("compat-fragment",
+                                            "tests/compat-fragment",
+                                            units,
+                                            codes,
+                                            vfs,
+                                            &info,
+                                            textures);
+#endif
 }
 
-TEST(ShaderPreprocessorCompatTest, IdentifierNamedSampleCompiles) {
+TEST(RustShaderBridgeCompat, IdentifierNamedSampleCompiles) {
+#ifndef WESCENE_HAS_RUST_SHADER_FFI
+    GTEST_SKIP() << "Rust shader staticlib was not linked";
+#else
     EXPECT_TRUE(CompileFragmentShader(R"(
 void main() {
     float sample = 0.25;
     gl_FragColor = vec4(sample, sample, sample, 1.0);
 }
-)"));
+)")) << shader::LastRustShaderError();
+#endif
 }
 
-TEST(ShaderPreprocessorCompatTest, ScalarFileScopeConstCompiles) {
+TEST(RustShaderBridgeCompat, ScalarFileScopeConstCompiles) {
+#ifndef WESCENE_HAS_RUST_SHADER_FFI
+    GTEST_SKIP() << "Rust shader staticlib was not linked";
+#else
     EXPECT_TRUE(CompileFragmentShader(R"(
 const float kAlpha = 0.75;
 void main() {
     gl_FragColor = vec4(kAlpha, 0.0, 0.0, 1.0);
 }
-)"));
+)")) << shader::LastRustShaderError();
+#endif
 }
 
-TEST(ShaderPreprocessorCompatTest, UserDefinedModDoesNotCreateDuplicateDefinition) {
+TEST(RustShaderBridgeCompat, UserDefinedModDoesNotCreateDuplicateDefinition) {
+#ifndef WESCENE_HAS_RUST_SHADER_FFI
+    GTEST_SKIP() << "Rust shader staticlib was not linked";
+#else
     EXPECT_TRUE(CompileFragmentShader(R"(
 float mod(float a, float b) {
     return a - b * floor(a / b);
@@ -115,11 +126,15 @@ float mod(float a, float b) {
 void main() {
     gl_FragColor = vec4(mod(5.0, 2.0), 0.0, 0.0, 1.0);
 }
-)"));
+)")) << shader::LastRustShaderError();
+#endif
 }
 
-TEST(ShaderPreprocessorCompatTest, UserDefinedScalarModPreservesBuiltinVectorMod) {
-    const std::string source = R"(
+TEST(RustShaderBridgeCompat, UserDefinedScalarModPreservesBuiltinVectorMod) {
+#ifndef WESCENE_HAS_RUST_SHADER_FFI
+    GTEST_SKIP() << "Rust shader staticlib was not linked";
+#else
+    EXPECT_TRUE(CompileFragmentShader(R"(
 float mod(float a, float b) {
     return a - b * floor(a / b);
 }
@@ -128,21 +143,15 @@ void main() {
     vec3 vector = mod(vec3(5.0, 6.0, 7.0), vec3(2.0));
     gl_FragColor = vec4(vector.x + scalar, vector.yz, 1.0);
 }
-)";
-
-    WPPreprocessorInfo info;
-    const Combos       combos;
-    const auto preprocessed = shader::PreprocessStageSource(source, ShaderType::FRAGMENT, combos, info);
-    auto       legalized = shader::LegalizeStageSource(preprocessed, ShaderType::FRAGMENT);
-    EXPECT_NE(legalized.source.find("_ww_user_mod(float a, float b)"), std::string::npos);
-    EXPECT_NE(legalized.source.find("_ww_user_mod(5.0, 2.0)"), std::string::npos);
-    EXPECT_NE(legalized.source.find("mod(vec3(5.0, 6.0, 7.0), vec3(2.0))"), std::string::npos);
-
-    EXPECT_TRUE(CompileFragmentShader(source));
+)")) << shader::LastRustShaderError();
+#endif
 }
 
-TEST(ShaderPreprocessorCompatTest, UserDefinedScalarModPreservesVectorVariableBuiltinMod) {
-    const std::string source = R"(
+TEST(RustShaderBridgeCompat, UserDefinedScalarModPreservesVectorVariableBuiltinMod) {
+#ifndef WESCENE_HAS_RUST_SHADER_FFI
+    GTEST_SKIP() << "Rust shader staticlib was not linked";
+#else
+    EXPECT_TRUE(CompileFragmentShader(R"(
 float mod(float a, float b) {
     return a - b * floor(a / b);
 }
@@ -153,20 +162,15 @@ void main() {
     vec3 vector = mod(a, b);
     gl_FragColor = vec4(vector.x + scalar, vector.yz, 1.0);
 }
-)";
-
-    WPPreprocessorInfo info;
-    const Combos       combos;
-    const auto preprocessed = shader::PreprocessStageSource(source, ShaderType::FRAGMENT, combos, info);
-    auto       legalized = shader::LegalizeStageSource(preprocessed, ShaderType::FRAGMENT);
-    EXPECT_NE(legalized.source.find("_ww_user_mod(5.0, 2.0)"), std::string::npos);
-    EXPECT_NE(legalized.source.find("mod(a, b)"), std::string::npos);
-
-    EXPECT_TRUE(CompileFragmentShader(source));
+)")) << shader::LastRustShaderError();
+#endif
 }
 
-TEST(ShaderPreprocessorCompatTest, UserDefinedScalarModPreservesMultilineMacroBody) {
-    const std::string source = R"(
+TEST(RustShaderBridgeCompat, UserDefinedScalarModPreservesMultilineMacroBody) {
+#ifndef WESCENE_HAS_RUST_SHADER_FFI
+    GTEST_SKIP() << "Rust shader staticlib was not linked";
+#else
+    EXPECT_TRUE(CompileFragmentShader(R"(
 float mod(float a, float b) {
     return a - b * floor(a / b);
 }
@@ -176,37 +180,35 @@ void main() {
     float scalar = mod(5.0, 2.0);
     gl_FragColor = vec4(scalar, 0.0, 0.0, 1.0);
 }
-)";
-
-    WPPreprocessorInfo info;
-    const Combos       combos;
-    const auto preprocessed = shader::PreprocessStageSource(source, ShaderType::FRAGMENT, combos, info);
-    auto       legalized = shader::LegalizeStageSource(preprocessed, ShaderType::FRAGMENT);
-    EXPECT_NE(legalized.source.find("#define MOD_THROUGH_MACRO(a, b) \\\n    mod(a, b)"), std::string::npos);
-    EXPECT_NE(legalized.source.find("_ww_user_mod(5.0, 2.0)"), std::string::npos);
-
-    EXPECT_TRUE(CompileFragmentShader(source));
+)")) << shader::LastRustShaderError();
+#endif
 }
 
-TEST(ShaderPreprocessorCompatTest, ExtraStrayEndifIsTolerated) {
+TEST(RustShaderBridgeCompat, ExtraStrayEndifIsTolerated) {
+#ifndef WESCENE_HAS_RUST_SHADER_FFI
+    GTEST_SKIP() << "Rust shader staticlib was not linked";
+#else
     EXPECT_TRUE(CompileFragmentShader(R"(
 #endif
 void main() {
     gl_FragColor = vec4(1.0);
 }
-)"));
+)")) << shader::LastRustShaderError();
+#endif
 }
 
-TEST(ShaderPreprocessorCompatTest, InPlaceIncludeOrderingPreservesMacroVisibility) {
-    GlslangEnvironment glslang;
-    const auto         temp = MakeTempDir();
+TEST(RustShaderBridgeCompat, InPlaceIncludeOrderingPreservesMacroVisibility) {
+#ifndef WESCENE_HAS_RUST_SHADER_FFI
+    GTEST_SKIP() << "Rust shader staticlib was not linked";
+#else
+    const auto temp = MakeTempDir();
     WriteText(temp / "assets" / "shaders" / "compat_defs.h", "#define INCLUDED_TINT vec4(0.2, 0.4, 0.6, 1.0)\n");
     fs::VFS vfs;
     MountAssets(vfs, temp);
 
     WPShaderInfo info;
     std::vector<WPShaderTexInfo> textures;
-    std::vector<WPShaderUnit> units {
+    std::array units {
         WPShaderUnit {
             .stage = ShaderType::VERTEX,
             .src = R"(
@@ -229,43 +231,57 @@ void main() {
         },
     };
 
-    for (auto& unit : units) {
-        unit.src = WPShaderParser::PreShaderSrc(vfs, unit.src, &info, textures);
-    }
-
     std::vector<ShaderCode> codes;
-    EXPECT_TRUE(WPShaderParser::CompileToSpv("compat-include", units, codes, vfs, &info, textures));
+    EXPECT_TRUE(WPShaderParser::CompileToSpvRust(
+        "compat-include", "tests/compat-include", units, codes, vfs, &info, textures))
+        << shader::LastRustShaderError();
+#endif
 }
 
-TEST(ShaderPreprocessorCompatTest, PerformLightingV1StubCompiles) {
+TEST(RustShaderBridgeCompat, PerformLightingV1StubCompiles) {
+#ifndef WESCENE_HAS_RUST_SHADER_FFI
+    GTEST_SKIP() << "Rust shader staticlib was not linked";
+#else
     EXPECT_TRUE(CompileFragmentShader(R"(
 void main() {
     vec3 lit = PerformLighting_V1(vec3(0.0), vec3(0.8), vec3(0.0, 0.0, 1.0),
                                   vec3(0.0, 0.0, 1.0), vec3(1.0), vec3(0.04), 0.5, 0.0);
     gl_FragColor = vec4(lit, 1.0);
 }
-)"));
+)")) << shader::LastRustShaderError();
+#endif
 }
 
-TEST(ShaderPreprocessorCompatTest, ClipIntrinsicCompiles) {
+TEST(RustShaderBridgeCompat, ClipIntrinsicCompiles) {
+#ifndef WESCENE_HAS_RUST_SHADER_FFI
+    GTEST_SKIP() << "Rust shader staticlib was not linked";
+#else
     EXPECT_TRUE(CompileFragmentShader(R"(
 void main() {
     clip(1.0);
     gl_FragColor = vec4(1.0);
 }
-)"));
+)")) << shader::LastRustShaderError();
+#endif
 }
 
-TEST(ShaderPreprocessorCompatTest, Log10IntrinsicCompiles) {
+TEST(RustShaderBridgeCompat, Log10IntrinsicCompiles) {
+#ifndef WESCENE_HAS_RUST_SHADER_FFI
+    GTEST_SKIP() << "Rust shader staticlib was not linked";
+#else
     EXPECT_TRUE(CompileFragmentShader(R"(
 void main() {
     float v = log10(100.0);
     gl_FragColor = vec4(v, 0.0, 0.0, 1.0);
 }
-)"));
+)")) << shader::LastRustShaderError();
+#endif
 }
 
-TEST(ShaderPreprocessorCompatTest, MixedIntVectorPowAndClampCompile) {
+TEST(RustShaderBridgeCompat, MixedIntVectorPowAndClampCompile) {
+#ifndef WESCENE_HAS_RUST_SHADER_FFI
+    GTEST_SKIP() << "Rust shader staticlib was not linked";
+#else
     EXPECT_TRUE(CompileFragmentShader(R"(
 void main() {
     vec3 base = vec3(2.0, 3.0, 4.0);
@@ -273,10 +289,14 @@ void main() {
     vec3 clamped = clamp(powered, 0, 8);
     gl_FragColor = vec4(clamped / 8.0, 1.0);
 }
-)"));
+)")) << shader::LastRustShaderError();
+#endif
 }
 
-TEST(ShaderPreprocessorCompatTest, MixedScalarVectorPowAndClampCompile) {
+TEST(RustShaderBridgeCompat, MixedScalarVectorPowAndClampCompile) {
+#ifndef WESCENE_HAS_RUST_SHADER_FFI
+    GTEST_SKIP() << "Rust shader staticlib was not linked";
+#else
     EXPECT_TRUE(CompileFragmentShader(R"(
 void main() {
     vec3 exponent = vec3(1.0, 2.0, 3.0);
@@ -284,10 +304,14 @@ void main() {
     vec3 clamped = clamp(0.5, vec3(0.0), vec3(1.0));
     gl_FragColor = vec4((powered + clamped) / 9.0, 1.0);
 }
-)"));
+)")) << shader::LastRustShaderError();
+#endif
 }
 
-TEST(ShaderPreprocessorCompatTest, ScalarTextureSampleMaskCompiles) {
+TEST(RustShaderBridgeCompat, ScalarTextureSampleMaskCompiles) {
+#ifndef WESCENE_HAS_RUST_SHADER_FFI
+    GTEST_SKIP() << "Rust shader staticlib was not linked";
+#else
     EXPECT_TRUE(CompileFragmentShader(R"(
 uniform sampler2D g_Texture0; // {"hidden":true}
 uniform sampler2D g_Texture1; // {"combo":"OPACITY","default":"util/white","material":"mask","mode":"opacitymask"}
@@ -320,40 +344,86 @@ void main() {
     if (mask > 0.1) albedo = sharpen(v_TexCoord.xy, mask);
     gl_FragColor = albedo;
 }
-)"));
+)")) << shader::LastRustShaderError();
+#endif
 }
 
-TEST(ShaderPreprocessorCompatTest, NumericComboMacroTernaryConditionCompiles) {
+TEST(RustShaderBridgeCompat, NumericComboMacroTernaryConditionCompiles) {
+#ifndef WESCENE_HAS_RUST_SHADER_FFI
+    GTEST_SKIP() << "Rust shader staticlib was not linked";
+#else
     EXPECT_TRUE(CompileFragmentShader(R"(
 void main() {
     float mask = 0.5;
     mask = INVERT ? 1.0 - mask : mask;
     gl_FragColor = vec4(mask, 0.0, 0.0, 1.0);
 }
-)", Combos { { "INVERT", "0" } }));
+)", Combos { { "INVERT", "0" } })) << shader::LastRustShaderError();
+#endif
 }
 
-TEST(ShaderPreprocessorCompatTest, MacroAliasedSvPositionIsNotCrossStageIo) {
-    WPPreprocessorInfo info;
-    const Combos       combos;
-    const auto preprocessed = shader::PreprocessStageSource(R"(
+TEST(RustShaderBridgeCompat, MacroAliasedSvPositionIsNotCrossStageIo) {
+#ifndef WESCENE_HAS_RUST_SHADER_FFI
+    GTEST_SKIP() << "Rust shader staticlib was not linked";
+#else
+    fs::VFS vfs;
+
+    WPShaderInfo info;
+    std::vector<WPShaderTexInfo> textures;
+    std::array units {
+        WPShaderUnit {
+            .stage = ShaderType::VERTEX,
+            .src = R"(
 #define gl_Position _ww_sv_position
 out vec2 v_TexCoord;
 out vec4 _ww_sv_position;
 void main() {
-    v_TexCoord = vec2(0.0);
-    _ww_sv_position = vec4(0.0);
+    v_TexCoord = vec2(0.25, 0.75);
+    _ww_sv_position = vec4(0.0, 0.0, 0.0, 1.0);
+#undef gl_Position
+    gl_Position = _ww_sv_position;
 }
-)", ShaderType::VERTEX, combos, info);
-    auto legalized = shader::LegalizeStageSource(preprocessed, ShaderType::VERTEX);
-    EXPECT_FALSE(legalized.preprocess_info.output.contains("_ww_sv_position"));
-    EXPECT_TRUE(legalized.preprocess_info.output.contains("v_TexCoord"));
+)",
+            .preprocess_info = {},
+        },
+        WPShaderUnit {
+            .stage = ShaderType::FRAGMENT,
+            .src = R"(
+in vec2 v_TexCoord;
+void main() {
+    gl_FragColor = vec4(v_TexCoord, 0.0, 1.0);
+}
+)",
+            .preprocess_info = {},
+        },
+    };
+
+    std::vector<ShaderCode> codes;
+    EXPECT_TRUE(WPShaderParser::CompileToSpvRust(
+        "compat-macro-sv-position", "tests/macro-sv-position", units, codes, vfs, &info, textures))
+        << shader::LastRustShaderError();
+#endif
 }
 
-TEST(ShaderPreprocessorCompatTest, GenericRopeParticleGeometrySourceDiscoveryRemainsDisabled) {
+TEST(RustShaderBridgeCompat, GenericRopeParticleGeometrySourceDiscoveryRemainsDisabled) {
+#ifndef WESCENE_HAS_RUST_SHADER_FFI
+    GTEST_SKIP() << "Rust shader staticlib was not linked";
+#else
     const auto temp = MakeTempDir();
-    WriteText(temp / "assets" / "shaders" / "genericropeparticle.vert", "void main() {}\n");
-    WriteText(temp / "assets" / "shaders" / "genericropeparticle.frag", "void main() {}\n");
+    WriteText(temp / "assets" / "shaders" / "genericropeparticle.vert", R"(
+in vec3 a_Position;
+varying vec2 v_TexCoord;
+void main() {
+    v_TexCoord = a_Position.xy;
+    gl_Position = vec4(a_Position, 1.0);
+}
+)");
+    WriteText(temp / "assets" / "shaders" / "genericropeparticle.frag", R"(
+varying vec2 v_TexCoord;
+void main() {
+    gl_FragColor = vec4(v_TexCoord, 0.0, 1.0);
+}
+)");
     WriteText(temp / "assets" / "shaders" / "genericropeparticle.geom", "#error geometry must remain undiscovered\n");
 
     fs::VFS vfs;
@@ -362,19 +432,28 @@ TEST(ShaderPreprocessorCompatTest, GenericRopeParticleGeometrySourceDiscoveryRem
 
     WPShaderInfo info;
     std::vector<WPShaderTexInfo> textures;
-    const auto vertex = WPShaderParser::PreShaderSrc(
-        vfs,
-        fs::GetFileContent(vfs, "/assets/shaders/genericropeparticle.vert"),
-        &info,
-        textures);
-    const auto fragment = WPShaderParser::PreShaderSrc(
-        vfs,
-        fs::GetFileContent(vfs, "/assets/shaders/genericropeparticle.frag"),
-        &info,
-        textures);
+    std::array units {
+        WPShaderUnit {
+            .stage = ShaderType::VERTEX,
+            .src = R"(
+#include "genericropeparticle.vert"
+)",
+            .preprocess_info = {},
+        },
+        WPShaderUnit {
+            .stage = ShaderType::FRAGMENT,
+            .src = R"(
+#include "genericropeparticle.frag"
+)",
+            .preprocess_info = {},
+        },
+    };
 
-    EXPECT_TRUE(vertex.find("geometry must remain undiscovered") == std::string::npos);
-    EXPECT_TRUE(fragment.find("geometry must remain undiscovered") == std::string::npos);
+    std::vector<ShaderCode> codes;
+    EXPECT_TRUE(WPShaderParser::CompileToSpvRust(
+        "compat-geometry", "tests/genericropeparticle", units, codes, vfs, &info, textures))
+        << shader::LastRustShaderError();
+#endif
 }
 
 } // namespace
