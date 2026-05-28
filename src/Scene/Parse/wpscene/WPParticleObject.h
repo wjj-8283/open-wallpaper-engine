@@ -4,6 +4,7 @@
 #include <nlohmann/json.hpp>
 #include <vector>
 #include <array>
+#include <map>
 #include "Utils/BitFlags.hpp"
 #include "Core/Literals.hpp"
 
@@ -147,6 +148,7 @@ public:
     float                size { 1.0f };
     std::array<float, 3> color { 1.0f, 1.0f, 1.0f };
     std::array<float, 3> colorn { 1.0f, 1.0f, 1.0f };
+    std::map<std::string, std::string> bindings;
 };
 
 class WPParticleObject {

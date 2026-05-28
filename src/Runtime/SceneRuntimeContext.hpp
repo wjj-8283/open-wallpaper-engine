@@ -9,6 +9,7 @@
 #include <Eigen/Dense>
 
 #include <condition_variable>
+#include <functional>
 #include <memory>
 #include <limits>
 #include <mutex>
@@ -207,6 +208,10 @@ private:
         std::string   name;
         DynamicValue* value { nullptr };
     };
+    struct DynamicValueListenerBinding {
+        DynamicValue*         value { nullptr };
+        std::function<void()> deregister;
+    };
     struct NodeAlignmentBinding {
         std::string     alignment;
         Eigen::Vector3f origin { Eigen::Vector3f::Zero() };
@@ -308,6 +313,7 @@ private:
     std::vector<MaterialAlphaBinding>                              m_material_alpha;
     std::vector<MaterialConstantBinding>                           m_material_constants;
     std::vector<TextValueBinding>                                  m_text_values;
+    std::vector<DynamicValueListenerBinding>                       m_dynamic_value_listeners;
     std::unordered_map<std::string, Eigen::Vector2f>               m_node_size;
     std::unordered_map<std::string, TextLayer>                     m_text_layers;
     std::unordered_map<std::string, uint64_t>                      m_queued_text_revisions;

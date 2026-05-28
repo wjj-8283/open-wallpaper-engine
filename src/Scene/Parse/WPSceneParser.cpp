@@ -697,20 +697,22 @@ void LoadControlPoint(ParticleSubSystem& pSys, const wpscene::Particle& wp) {
     }
 }
 void LoadInitializer(ParticleSubSystem& pSys, const wpscene::Particle& wp,
-                     const wpscene::ParticleInstanceoverride& over) {
+                     const std::shared_ptr<wpscene::ParticleInstanceoverride>& over) {
     for (const auto& ini : wp.initializers) {
         pSys.AddInitializer(WPParticleParser::genParticleInitOp(ini));
     }
-    if (over.enabled) pSys.AddInitializer(WPParticleParser::genOverrideInitOp(over));
+    if (over->enabled) pSys.AddInitializer(WPParticleParser::genOverrideInitOp(over));
 }
 void LoadOperator(ParticleSubSystem& pSys, const wpscene::Particle& wp,
-                  const wpscene::ParticleInstanceoverride& over) {
+                  const std::shared_ptr<wpscene::ParticleInstanceoverride>& over) {
     for (const auto& op : wp.operators) {
         pSys.AddOperator(WPParticleParser::genParticleOperatorOp(op, over));
     }
 }
-void LoadEmitter(ParticleSubSystem& pSys, const wpscene::Particle& wp, float count,
-                 bool render_rope, Scene* scene) {
+void LoadEmitter(ParticleSubSystem& pSys, const wpscene::Particle& wp,
+                 const std::shared_ptr<const wpscene::ParticleInstanceoverride>& over,
+                 bool render_rope, Scene* scene, i32 cp_start_index = 0,
+                 Eigen::Vector3f world_scale = Eigen::Vector3f::Ones()) {
     bool sort = render_rope;
     for (const auto& em : wp.emitters) {
         if (em.audioprocessingmode != 0) {
@@ -718,9 +720,12 @@ void LoadEmitter(ParticleSubSystem& pSys, const wpscene::Particle& wp, float cou
             LogUnsupportedParticleAudioModeOnce(em.audioprocessingmode);
         }
         auto newEm = em;
-        newEm.rate *= count;
-        // newEm.origin[2] -= perspectiveZ;
-        pSys.AddEmitter(WPParticleParser::genParticleEmittOp(newEm, sort));
+        if (newEm.controlpoint >= 0) newEm.controlpoint += cp_start_index;
+        for (int i = 0; i < 3; ++i) {
+            const float scale = world_scale[i];
+            if (std::abs(scale) > 1.0e-6f) newEm.origin[i] /= scale;
+        }
+        pSys.AddEmitter(WPParticleParser::genParticleEmittOp(newEm, sort, over));
     }
 }
 
@@ -2458,7 +2463,72 @@ struct ParticleChildPtr {
     ParticleSubSystem*      particle_parent { nullptr };
 
     i32 max_instancecount { 1 };
+    Eigen::Vector3f world_scale { Eigen::Vector3f::Ones() };
 };
+
+void ApplyParticleOverrideDynamicValue(wpscene::ParticleInstanceoverride& over,
+                                       const std::string& field,
+                                       const DynamicValue& value) {
+    if (field == "alpha") {
+        over.alpha = value.getFloat();
+    } else if (field == "size") {
+        over.size = value.getFloat();
+    } else if (field == "lifetime") {
+        over.lifetime = value.getFloat();
+    } else if (field == "rate") {
+        over.rate = value.getFloat();
+    } else if (field == "speed") {
+        over.speed = value.getFloat();
+    } else if (field == "count") {
+        over.count = value.getFloat();
+    } else if (field == "color") {
+        const auto vec = value.getVec3();
+        over.color     = { vec.x(), vec.y(), vec.z() };
+        over.overColor = true;
+    } else if (field == "colorn") {
+        const auto vec  = value.getVec3();
+        over.colorn     = { vec.x(), vec.y(), vec.z() };
+        over.overColorn = true;
+    }
+}
+
+std::unique_ptr<DynamicValue>
+MakeParticleOverrideDynamicValue(SceneRuntimeContext& runtime,
+                                 const wpscene::ParticleInstanceoverride& over,
+                                 const std::string& field,
+                                 const std::string& user) {
+    std::unique_ptr<DynamicValue> value;
+    if (field == "color") {
+        value = std::make_unique<DynamicValue>(
+            Eigen::Vector3f(over.color[0], over.color[1], over.color[2]));
+    } else if (field == "colorn") {
+        value = std::make_unique<DynamicValue>(
+            Eigen::Vector3f(over.colorn[0], over.colorn[1], over.colorn[2]));
+    } else if (field == "alpha") {
+        value = std::make_unique<DynamicValue>(over.alpha);
+    } else if (field == "size") {
+        value = std::make_unique<DynamicValue>(over.size);
+    } else if (field == "lifetime") {
+        value = std::make_unique<DynamicValue>(over.lifetime);
+    } else if (field == "rate") {
+        value = std::make_unique<DynamicValue>(over.rate);
+    } else if (field == "speed") {
+        value = std::make_unique<DynamicValue>(over.speed);
+    } else if (field == "count") {
+        value = std::make_unique<DynamicValue>(over.count);
+    } else {
+        return nullptr;
+    }
+
+    if (auto* property_value = runtime.FindPropertyValue(user); property_value != nullptr) {
+        if (field == "color" || field == "colorn") {
+            value->connectVec3(property_value);
+        } else {
+            value->connect(property_value);
+        }
+    }
+    return value;
+}
 
 void ParseParticleObj(ParseContext& context, wpscene::WPParticleObject& wppartobj,
                       ParticleChildPtr child_ptr = {}) {
@@ -2484,7 +2554,12 @@ void ParseParticleObj(ParseContext& context, wpscene::WPParticleObject& wppartob
         is_child ? std::string {} : LayerRuntimeName(context, wppartobj);
     if (is_child) {
         p_particle_obj = &(child_ptr.child->obj);
-        spNode         = std::make_shared<SceneNode>(Vector3f(child_ptr.child->origin.data()),
+        Vector3f child_origin(child_ptr.child->origin.data());
+        for (int i = 0; i < 3; ++i) {
+            const float scale = child_ptr.world_scale[i];
+            if (std::abs(scale) > 1.0e-6f) child_origin[i] /= scale;
+        }
+        spNode         = std::make_shared<SceneNode>(child_origin,
                                              Vector3f(child_ptr.child->scale.data()),
                                              Vector3f(child_ptr.child->angles.data()));
         child_data     = ChildData(*child_ptr.child);
@@ -2498,6 +2573,9 @@ void ParseParticleObj(ParseContext& context, wpscene::WPParticleObject& wppartob
                                              Vector3f(wppartobj.angles.data()),
                                              runtime_name);
     }
+
+    const Eigen::Vector3f node_world_scale =
+        child_ptr.world_scale.cwiseProduct(spNode->Scale());
 
     RuntimeNodeRegistrationRollback runtime_node_registration(
         is_child ? nullptr : context.scene->runtime.get(),
@@ -2559,7 +2637,21 @@ void ParseParticleObj(ParseContext& context, wpscene::WPParticleObject& wppartob
         }
     }
 
-    wpscene::ParticleInstanceoverride override = wppartobj.instanceoverride;
+    auto override_state =
+        std::make_shared<wpscene::ParticleInstanceoverride>(wppartobj.instanceoverride);
+    auto& override = *override_state;
+    if (context.scene->runtime != nullptr) {
+        for (const auto& [field, user] : override.bindings) {
+            auto value =
+                MakeParticleOverrideDynamicValue(*context.scene->runtime, override, field, user);
+            if (value == nullptr) continue;
+            context.scene->runtime->RegisterDynamicValueListener(
+                std::move(value),
+                [override_state, field](const DynamicValue& value) {
+                    ApplyParticleOverrideDynamicValue(*override_state, field, value);
+                });
+        }
+    }
 
     auto& particle_obj = *p_particle_obj;
     auto& vfs          = *context.vfs;
@@ -2662,7 +2754,7 @@ void ParseParticleObj(ParseContext& context, wpscene::WPParticleObject& wppartob
         *context.scene->paritileSys,
         spMesh,
         maxcount,
-        override.rate,
+        1.0,
         child_data.maxcount,
         child_data.probability,
         ParseSpawnType(child_data.type),
@@ -2679,11 +2771,20 @@ void ParseParticleObj(ParseContext& context, wpscene::WPParticleObject& wppartob
                 break;
             }
         });
+    particleSub->SetRateMultiplier([override_state] {
+        return override_state->enabled ? static_cast<double>(override_state->rate) : 1.0;
+    });
     particleSub->SetOwnerNode(spNode);
 
-    LoadEmitter(*particleSub, particle_obj, override.count, render_rope, context.scene.get());
-    LoadInitializer(*particleSub, particle_obj, override);
-    LoadOperator(*particleSub, particle_obj, override);
+    LoadEmitter(*particleSub,
+                particle_obj,
+                override_state,
+                render_rope,
+                context.scene.get(),
+                is_child ? child_data.controlpointstartindex : 0,
+                node_world_scale);
+    LoadInitializer(*particleSub, particle_obj, override_state);
+    LoadOperator(*particleSub, particle_obj, override_state);
     LoadControlPoint(*particleSub, particle_obj);
 
     mesh.AddMaterial(std::move(material));
@@ -2709,6 +2810,7 @@ void ParseParticleObj(ParseContext& context, wpscene::WPParticleObject& wppartob
                              .node_parent       = spNode.get(),
                              .particle_parent   = particleSub.get(),
                              .max_instancecount = child_ptr.max_instancecount,
+                             .world_scale       = node_world_scale,
                          });
     }
 

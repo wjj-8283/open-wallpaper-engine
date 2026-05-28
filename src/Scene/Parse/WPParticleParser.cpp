@@ -208,17 +208,18 @@ ParticleInitOp WPParticleParser::genParticleInitOp(const nlohmann::json& wpj) {
     };
 }
 
-ParticleInitOp WPParticleParser::genOverrideInitOp(const wpscene::ParticleInstanceoverride& over) {
-    return [=](Particle& p, double) {
-        PM::MutiplyInitLifeTime(p, over.lifetime);
-        PM::MutiplyInitAlpha(p, over.alpha);
-        PM::MutiplyInitSize(p, over.size);
-        PM::MutiplyVelocity(p, over.speed);
-        if (over.overColor) {
+ParticleInitOp WPParticleParser::genOverrideInitOp(
+    std::shared_ptr<const wpscene::ParticleInstanceoverride> over) {
+    return [over = std::move(over)](Particle& p, double) {
+        PM::MutiplyInitLifeTime(p, over->lifetime);
+        PM::MutiplyInitAlpha(p, over->alpha);
+        PM::MutiplyInitSize(p, over->size);
+        PM::MutiplyVelocity(p, over->speed);
+        if (over->overColor) {
             PM::InitColor(
-                p, over.color[0] / 255.0f, over.color[1] / 255.0f, over.color[2] / 255.0f);
-        } else if (over.overColorn) {
-            PM::MutiplyInitColor(p, over.colorn[0], over.colorn[1], over.colorn[2]);
+                p, over->color[0] / 255.0f, over->color[1] / 255.0f, over->color[2] / 255.0f);
+        } else if (over->overColorn) {
+            PM::InitColor(p, over->colorn[0], over->colorn[1], over->colorn[2]);
         }
     };
 }
@@ -440,21 +441,22 @@ struct ControlPointForce {
 };
 
 ParticleOperatorOp
-WPParticleParser::genParticleOperatorOp(const nlohmann::json&                    wpj,
-                                        const wpscene::ParticleInstanceoverride& over) {
+WPParticleParser::genParticleOperatorOp(
+    const nlohmann::json&                                   wpj,
+    std::shared_ptr<const wpscene::ParticleInstanceoverride> over) {
     do {
         if (! wpj.contains("name")) break;
         std::string name;
         GET_JSON_NAME_VALUE(wpj, "name", name);
         if (name == "movement") {
             float drag { 0.0f };
-            auto  speed = over.speed;
 
             std::array<float, 3> gravity { 0, 0, 0 };
             GET_JSON_NAME_VALUE_NOWARN(wpj, "drag", drag);
             GET_JSON_NAME_VALUE_NOWARN(wpj, "gravity", gravity);
             Vector3d vecG = Vector3f(gravity.data()).cast<double>();
-            return [=](const ParticleInfo& info) {
+            return [drag, vecG, over](const ParticleInfo& info) {
+                const auto speed = over->speed;
                 for (auto& p : info.particles) {
                     Vector3d acc =
                         algorism::DragForce(PM::GetVelocity(p).cast<double>(), drag) + vecG;
@@ -476,8 +478,8 @@ WPParticleParser::genParticleOperatorOp(const nlohmann::json&                   
             };
         } else if (name == "sizechange") {
             auto vc        = ValueChange::ReadFromJson(wpj);
-            auto size_over = over.size;
-            return [vc, size_over](const ParticleInfo& info) {
+            return [vc, over](const ParticleInfo& info) {
+                const auto size_over = over->size;
                 for (auto& p : info.particles)
                     PM::MutiplySize(p, size_over * FadeValueChange(PM::LifetimePos(p), vc));
             };
@@ -615,7 +617,14 @@ WPParticleParser::genParticleOperatorOp(const nlohmann::json&                   
     };
 }
 
-ParticleEmittOp WPParticleParser::genParticleEmittOp(const wpscene::Emitter& wpe, bool sort) {
+ParticleEmittOp WPParticleParser::genParticleEmittOp(
+    const wpscene::Emitter& wpe,
+    bool sort,
+    std::shared_ptr<const wpscene::ParticleInstanceoverride> override) {
+    std::shared_ptr<const float> count_multiplier;
+    if (override != nullptr && override->enabled) {
+        count_multiplier = std::shared_ptr<const float>(override, &override->count);
+    }
     if (wpe.name == "boxrandom") {
         ParticleBoxEmitterArgs box;
         box.emitSpeed     = wpe.rate;
@@ -629,6 +638,7 @@ ParticleEmittOp WPParticleParser::genParticleEmittOp(const wpscene::Emitter& wpe
         box.maxSpeed      = wpe.speedmax;
         box.controlpoint  = wpe.controlpoint;
         box.sort          = sort;
+        box.countMultiplier = count_multiplier;
         return ParticleBoxEmitterArgs::MakeEmittOp(box);
     } else if (wpe.name == "sphererandom") {
         ParticleSphereEmitterArgs sphere;
@@ -644,6 +654,7 @@ ParticleEmittOp WPParticleParser::genParticleEmittOp(const wpscene::Emitter& wpe
         sphere.maxSpeed      = wpe.speedmax;
         sphere.controlpoint  = wpe.controlpoint;
         sphere.sort          = sort;
+        sphere.countMultiplier = count_multiplier;
         return ParticleSphereEmitterArgs::MakeEmittOp(sphere);
     } else
         return [](std::vector<Particle>&,

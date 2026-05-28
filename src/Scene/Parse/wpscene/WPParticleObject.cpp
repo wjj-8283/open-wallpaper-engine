@@ -23,6 +23,17 @@ bool has_dynamic_setting(const nlohmann::json& value)
     return value.is_object() && (value.contains("script") || value.contains("user"));
 }
 
+void remember_user_binding(
+    const nlohmann::json&                  json,
+    const char*                            key,
+    std::map<std::string, std::string>*    bindings)
+{
+    if (bindings == nullptr || !json.contains(key)) return;
+    const auto& value = json.at(key);
+    if (!value.is_object() || !value.contains("user") || !value.at("user").is_string()) return;
+    (*bindings)[key] = value.at("user").get<std::string>();
+}
+
 void read_vec3_setting(
     const nlohmann::json&  json,
     const char*            key,
@@ -138,6 +149,9 @@ bool Emitter::FromJson(const nlohmann::json& json) {
 
 bool ParticleInstanceoverride::FromJosn(const nlohmann::json& json) {
     enabled = true;
+    for (const char* key : { "alpha", "size", "lifetime", "rate", "speed", "count", "color", "colorn" }) {
+        remember_user_binding(json, key, &bindings);
+    }
     GET_JSON_NAME_VALUE_NOWARN(json, "alpha", alpha);
     GET_JSON_NAME_VALUE_NOWARN(json, "size", size);
     GET_JSON_NAME_VALUE_NOWARN(json, "lifetime", lifetime);

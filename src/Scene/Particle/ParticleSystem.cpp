@@ -61,6 +61,10 @@ void ParticleSubSystem::SetOwnerNode(std::weak_ptr<SceneNode> node) {
     m_owner_node = std::move(node);
 }
 
+void ParticleSubSystem::SetRateMultiplier(std::function<double()> rate_multiplier) {
+    m_rate_multiplier = std::move(rate_multiplier);
+}
+
 ParticleSubSystem::SpawnType ParticleSubSystem::Type() const { return m_spawn_type; }
 
 u32 ParticleSubSystem::MaxInstanceCount() const { return m_maxcount_instance; };
@@ -106,7 +110,9 @@ ParticleInstance* ParticleSubSystem::QueryNewInstance() {
 
 void ParticleSubSystem::Emitt() {
     double frameTime    = m_sys.scene.frameTime;
-    double particleTime = frameTime * m_rate;
+    const double rate_multiplier =
+        m_rate_multiplier ? std::max(0.0, m_rate_multiplier()) : 1.0;
+    double particleTime = frameTime * m_rate * rate_multiplier;
     m_time += particleTime;
     UpdateMouseControlpoints();
 

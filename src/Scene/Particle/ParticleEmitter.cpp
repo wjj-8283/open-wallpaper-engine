@@ -9,6 +9,7 @@
 #include <random>
 #include <array>
 #include <tuple>
+#include <cmath>
 
 using namespace wallpaper;
 
@@ -25,12 +26,13 @@ inline std::tuple<u32, bool> FindLastParticle(std::span<const Particle> ps, u32 
     return { 0, false };
 }
 
-inline u32 GetEmitNum(double& timer, float speed) {
-    double emitDur = 1.0f / speed;
+inline u32 GetEmitNum(double& timer, double speed) {
+    if (speed <= 0.0) return 0;
+    const double emitDur = 1.0 / speed;
     if (emitDur > timer) return 0;
-    u32 num = timer / emitDur;
-    while (emitDur < timer) timer -= emitDur;
-    if (timer < 0) timer = 0;
+    u32 num = static_cast<u32>((timer / emitDur) + 1.0e-9);
+    timer -= static_cast<double>(num) * emitDur;
+    if (timer < 1.0e-9) timer = 0;
     return num;
 }
 
@@ -99,6 +101,11 @@ inline Eigen::Vector3d ResolveEmitterOrigin(std::span<const ParticleControlpoint
     }
     return origin;
 }
+
+inline float ResolveMultiplier(const std::shared_ptr<const float>& multiplier) {
+    if (multiplier == nullptr) return 1.0f;
+    return std::max(0.0f, *multiplier);
+}
 } // namespace
 
 ParticleEmittOp ParticleBoxEmitterArgs::MakeEmittOp(ParticleBoxEmitterArgs a) {
@@ -124,11 +131,15 @@ ParticleEmittOp ParticleBoxEmitterArgs::MakeEmittOp(ParticleBoxEmitterArgs a) {
             ParticleModify::Move(p, origin);
             return p;
         };
-        u32 emit_num = GetEmitNum(timer, a.emitSpeed);
+        const float count_multiplier = ResolveMultiplier(a.countMultiplier);
+        u32 emit_num = GetEmitNum(timer, a.emitSpeed * count_multiplier);
         emit_num     = a.one_per_frame ? 1 : emit_num;
-        emit_num     = a.instantaneous > 0 && ps.empty() ? a.instantaneous : emit_num;
+        emit_num     = a.instantaneous > 0 && ps.empty()
+                       ? static_cast<u32>(std::ceil(static_cast<float>(a.instantaneous) *
+                                                    count_multiplier))
+                       : emit_num;
         Emitt(ps, emit_num, maxcount, a.sort, [&]() {
-            return Spwan(GenBox, inis, 1.0f / a.emitSpeed);
+            return Spwan(GenBox, inis, a.emitSpeed > 0.0f ? 1.0f / a.emitSpeed : 0.0f);
         });
     };
 }
@@ -162,11 +173,15 @@ ParticleEmittOp ParticleSphereEmitterArgs::MakeEmittOp(ParticleSphereEmitterArgs
             ParticleModify::Move(p, origin);
             return p;
         };
-        u32 emit_num = GetEmitNum(timer, a.emitSpeed);
+        const float count_multiplier = ResolveMultiplier(a.countMultiplier);
+        u32 emit_num = GetEmitNum(timer, a.emitSpeed * count_multiplier);
         emit_num     = a.one_per_frame ? 1 : emit_num;
-        emit_num     = a.instantaneous > 0 && ps.empty() ? a.instantaneous : emit_num;
+        emit_num     = a.instantaneous > 0 && ps.empty()
+                       ? static_cast<u32>(std::ceil(static_cast<float>(a.instantaneous) *
+                                                    count_multiplier))
+                       : emit_num;
         Emitt(ps, emit_num, maxcount, a.sort, [&]() {
-            return Spwan(GenSphere, inis, 1.0f / a.emitSpeed);
+            return Spwan(GenSphere, inis, a.emitSpeed > 0.0f ? 1.0f / a.emitSpeed : 0.0f);
         });
     };
 }

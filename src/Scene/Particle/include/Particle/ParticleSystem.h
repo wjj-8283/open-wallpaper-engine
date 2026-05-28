@@ -5,6 +5,7 @@
 #include "Core/MapSet.hpp"
 
 #include <memory>
+#include <functional>
 
 namespace wallpaper
 {
@@ -79,6 +80,7 @@ public:
     std::span<ParticleControlpoint>       Controlpoints();
 
     void SetOwnerNode(std::weak_ptr<SceneNode> node);
+    void SetRateMultiplier(std::function<double()> rate_multiplier);
 
     SpawnType Type() const;
     u32       MaxInstanceCount() const;
@@ -100,6 +102,7 @@ private:
     u32                  m_maxcount;
     double               m_rate;
     double               m_time;
+    std::function<double()> m_rate_multiplier;
 
     std::vector<std::unique_ptr<ParticleSubSystem>> m_children;
     std::vector<std::unique_ptr<ParticleInstance>>  m_instances;

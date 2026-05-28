@@ -47,6 +47,7 @@ struct ParticleBoxEmitterArgs {
     float                minSpeed;
     float                maxSpeed;
     i32                  controlpoint { 0 };
+    std::shared_ptr<const float> countMultiplier;
 
     static ParticleEmittOp MakeEmittOp(ParticleBoxEmitterArgs);
 };
@@ -64,6 +65,7 @@ struct ParticleSphereEmitterArgs {
     float                  minSpeed;
     float                  maxSpeed;
     i32                    controlpoint { 0 };
+    std::shared_ptr<const float> countMultiplier;
 
     static ParticleEmittOp MakeEmittOp(ParticleSphereEmitterArgs);
 };

@@ -2,6 +2,9 @@
 #include "Interface/IParticleRawGener.h"
 #include "Particle/ParticleModify.h"
 #include "Particle/ParticleSystem.h"
+#include "Project/ProjectProperties.hpp"
+#include "Runtime/DynamicValue.hpp"
+#include "Runtime/SceneRuntimeContext.hpp"
 #include "Scene/Scene.h"
 #include "Scene/SceneNode.h"
 #include "WPParticleParser.hpp"
@@ -12,6 +15,7 @@
 
 #include <cmath>
 #include <memory>
+#include <vector>
 
 namespace wallpaper
 {
@@ -34,6 +38,23 @@ public:
 
     std::vector<Particle> particles;
 };
+
+std::unique_ptr<ParticleSubSystem> MakeTestSubsystem(ParticleSystem& system,
+                                                     std::shared_ptr<SceneMesh> mesh,
+                                                     ParticleRawGenSpecOp spec = {}) {
+    if (! spec) {
+        spec = [](const Particle&, const ParticleRawGenSpec&) {
+        };
+    }
+    return std::make_unique<ParticleSubSystem>(system,
+                                               std::move(mesh),
+                                               8,
+                                               1.0,
+                                               1,
+                                               1.0,
+                                               ParticleSubSystem::SpawnType::STATIC,
+                                               std::move(spec));
+}
 
 Particle FirstSpawnedParticle(ParticleEmittOp&                      emitter,
                               std::span<const ParticleControlpoint> controlpoints) {
@@ -82,6 +103,67 @@ TEST(ParticleMouseControlpoint, EmitterParsesAudioResponseParameters) {
     EXPECT_FLOAT_EQ(emitter.rate, 4.0f);
 }
 
+TEST(ParticleMouseControlpoint, InstanceoverridePreservesUserBindings) {
+    wpscene::ParticleInstanceoverride override;
+
+    ASSERT_TRUE(override.FromJosn(nlohmann::json {
+        { "alpha", { { "user", "alpha_property" }, { "value", 0.25f } } },
+        { "size", { { "user", "size_property" }, { "value", 2.0f } } },
+        { "colorn", { { "user", "color_property" }, { "value", "0.1 0.2 0.3" } } },
+    }));
+
+    EXPECT_TRUE(override.enabled);
+    EXPECT_FLOAT_EQ(override.alpha, 0.25f);
+    EXPECT_FLOAT_EQ(override.size, 2.0f);
+    EXPECT_TRUE(override.overColorn);
+    EXPECT_EQ(override.bindings.at("alpha"), "alpha_property");
+    EXPECT_EQ(override.bindings.at("size"), "size_property");
+    EXPECT_EQ(override.bindings.at("colorn"), "color_property");
+}
+
+TEST(ParticleMouseControlpoint, OverrideColornIsAbsoluteNormalizedColor) {
+    auto override        = std::make_shared<wpscene::ParticleInstanceoverride>();
+    override->enabled    = true;
+    override->overColorn = true;
+    override->colorn     = { 0.25f, 0.5f, 0.75f };
+
+    auto init = WPParticleParser::genOverrideInitOp(override);
+
+    Particle particle;
+    ParticleModify::InitColor(particle, 0.2, 0.2, 0.2);
+    init(particle, 0.0);
+
+    EXPECT_FLOAT_EQ(particle.color.x(), 0.25f);
+    EXPECT_FLOAT_EQ(particle.color.y(), 0.5f);
+    EXPECT_FLOAT_EQ(particle.color.z(), 0.75f);
+}
+
+TEST(ParticleMouseControlpoint, OverrideInitializerReadsRuntimeMutatedState) {
+    auto override     = std::make_shared<wpscene::ParticleInstanceoverride>();
+    override->enabled = true;
+    override->size    = 2.0f;
+    override->speed   = 3.0f;
+
+    auto init = WPParticleParser::genOverrideInitOp(override);
+
+    Particle first;
+    ParticleModify::InitSize(first, 1.0f);
+    ParticleModify::InitVelocity(first, 1.0f, 0.0f, 0.0f);
+    init(first, 0.0);
+    EXPECT_FLOAT_EQ(first.size, 2.0f);
+    EXPECT_FLOAT_EQ(first.velocity.x(), 3.0f);
+
+    override->size  = 4.0f;
+    override->speed = 0.5f;
+
+    Particle second;
+    ParticleModify::InitSize(second, 1.0f);
+    ParticleModify::InitVelocity(second, 2.0f, 0.0f, 0.0f);
+    init(second, 0.0);
+    EXPECT_FLOAT_EQ(second.size, 4.0f);
+    EXPECT_FLOAT_EQ(second.velocity.x(), 1.0f);
+}
+
 TEST(ParticleMouseControlpoint, ControlpointAttractReadsThresholdAndOrigin) {
     nlohmann::json json {
         { "name", "controlpointattract" },
@@ -92,7 +174,9 @@ TEST(ParticleMouseControlpoint, ControlpointAttractReadsThresholdAndOrigin) {
     };
 
     WPParticleParser parser;
-    auto             op = parser.genParticleOperatorOp(json, wpscene::ParticleInstanceoverride {});
+    auto             op = parser.genParticleOperatorOp(
+        json,
+        std::make_shared<wpscene::ParticleInstanceoverride>());
 
     std::array<ParticleControlpoint, 8> controlpoints {};
     controlpoints[1].offset = Eigen::Vector3d(3.0, 0.0, 0.0);
@@ -111,14 +195,18 @@ TEST(ParticleMouseControlpoint, ControlpointAttractReadsThresholdAndOrigin) {
     EXPECT_FLOAT_EQ(particles[0].velocity.x(), 0.0f);
 
     json["threshold"] = 6.0f;
-    op                = parser.genParticleOperatorOp(json, wpscene::ParticleInstanceoverride {});
+    op                = parser.genParticleOperatorOp(
+        json,
+        std::make_shared<wpscene::ParticleInstanceoverride>());
     particles[0].velocity = Eigen::Vector3f::Zero();
     op(info);
 
     EXPECT_FLOAT_EQ(particles[0].velocity.x(), 10.0f);
 
     json["threadhold"] = 4.0f;
-    op                 = parser.genParticleOperatorOp(json, wpscene::ParticleInstanceoverride {});
+    op                 = parser.genParticleOperatorOp(
+        json,
+        std::make_shared<wpscene::ParticleInstanceoverride>());
     particles[0].velocity = Eigen::Vector3f::Zero();
     op(info);
 
@@ -134,7 +222,9 @@ TEST(ParticleMouseControlpoint, ControlpointAttractNormalizesNegativeIndexSafely
     };
 
     WPParticleParser parser;
-    auto             op = parser.genParticleOperatorOp(json, wpscene::ParticleInstanceoverride {});
+    auto             op = parser.genParticleOperatorOp(
+        json,
+        std::make_shared<wpscene::ParticleInstanceoverride>());
 
     std::array<ParticleControlpoint, 8> controlpoints {};
     controlpoints[0].offset = Eigen::Vector3d(5.0, 0.0, 0.0);
@@ -163,7 +253,9 @@ TEST(ParticleMouseControlpoint, ControlpointAttractSkipsZeroDistance) {
     };
 
     WPParticleParser parser;
-    auto             op = parser.genParticleOperatorOp(json, wpscene::ParticleInstanceoverride {});
+    auto             op = parser.genParticleOperatorOp(
+        json,
+        std::make_shared<wpscene::ParticleInstanceoverride>());
 
     std::array<ParticleControlpoint, 8> controlpoints {};
     controlpoints[1].offset = Eigen::Vector3d(3.0, 0.0, 0.0);
@@ -292,20 +384,252 @@ TEST(ParticleMouseControlpoint, MovementIntegratesAfterControlpointAttractUpdate
                             { "gravity", { 0.0f, 0.0f, 0.0f } },
                             { "drag", 0.0f },
                         },
-                                                       wpscene::ParticleInstanceoverride {}));
+                                                       std::make_shared<wpscene::ParticleInstanceoverride>()));
     subsystem.AddOperator(parser.genParticleOperatorOp(nlohmann::json {
                             { "name", "controlpointattract" },
                             { "controlpoint", 0 },
                             { "scale", 2.0f },
                             { "threshold", 20.0f },
                         },
-                                                       wpscene::ParticleInstanceoverride {}));
+                                                       std::make_shared<wpscene::ParticleInstanceoverride>()));
 
     subsystem.Emitt();
 
     ASSERT_EQ(rawGener->particles.size(), 1u);
     EXPECT_FLOAT_EQ(rawGener->particles[0].velocity.x(), 3.0f);
     EXPECT_FLOAT_EQ(rawGener->particles[0].position.x(), 3.0f);
+}
+
+TEST(ParticleMouseControlpoint, MovementOperatorReadsRuntimeMutatedSpeedOverride) {
+    auto override     = std::make_shared<wpscene::ParticleInstanceoverride>();
+    override->enabled = true;
+    override->speed   = 2.0f;
+
+    auto op = WPParticleParser::genParticleOperatorOp(
+        nlohmann::json {
+            { "name", "movement" },
+            { "gravity", { 1.0f, 0.0f, 0.0f } },
+            { "drag", 0.0f },
+        },
+        override);
+
+    std::array<ParticleControlpoint, 8> controlpoints {};
+    std::array<Particle, 1>             particles {};
+    ParticleInfo info {
+        .particles     = particles,
+        .controlpoints = controlpoints,
+        .time          = 0.0,
+        .time_pass     = 1.0,
+    };
+
+    op(info);
+    EXPECT_FLOAT_EQ(particles[0].velocity.x(), 2.0f);
+
+    override->speed = 0.5f;
+    particles[0].velocity = Eigen::Vector3f::Zero();
+    op(info);
+
+    EXPECT_FLOAT_EQ(particles[0].velocity.x(), 0.5f);
+}
+
+TEST(ParticleMouseControlpoint, SubsystemRateOverrideControlsInitialEmissionTiming) {
+    Scene scene;
+    scene.frameTime = 1.0;
+
+    auto* rawGener = new CapturingParticleRawGener();
+    auto  mesh     = std::make_shared<SceneMesh>(true);
+
+    ParticleSystem system(scene);
+    system.gener.reset(rawGener);
+
+    ParticleSubSystem subsystem(system,
+                                mesh,
+                                8,
+                                0.5,
+                                1,
+                                1.0,
+                                ParticleSubSystem::SpawnType::STATIC,
+                                [](const Particle&, const ParticleRawGenSpec&) {
+                                });
+    subsystem.SetRateMultiplier([] {
+        return 2.0;
+    });
+    subsystem.AddEmitter(WPParticleParser::genParticleEmittOp(wpscene::Emitter {
+        .instantaneous = 0,
+        .name          = "boxrandom",
+        .rate          = 1.0f,
+    }));
+    subsystem.AddInitializer([](Particle& particle, double) {
+        ParticleModify::InitLifetime(particle, 10.0f);
+    });
+
+    subsystem.Emitt();
+
+    ASSERT_EQ(rawGener->particles.size(), 1u);
+}
+
+TEST(ParticleMouseControlpoint, SubsystemRateOverrideControlsRuntimeEmissionTiming) {
+    Scene scene;
+    scene.frameTime = 1.0;
+
+    auto* rawGener = new CapturingParticleRawGener();
+    auto  mesh     = std::make_shared<SceneMesh>(true);
+
+    ParticleSystem system(scene);
+    system.gener.reset(rawGener);
+
+    double rate_override = 0.5;
+    ParticleSubSystem subsystem(system,
+                                mesh,
+                                8,
+                                1.0,
+                                1,
+                                1.0,
+                                ParticleSubSystem::SpawnType::STATIC,
+                                [](const Particle&, const ParticleRawGenSpec&) {
+                                });
+    subsystem.SetRateMultiplier([&rate_override] {
+        return rate_override;
+    });
+    subsystem.AddEmitter(WPParticleParser::genParticleEmittOp(wpscene::Emitter {
+        .instantaneous = 0,
+        .name          = "boxrandom",
+        .rate          = 1.0f,
+    }));
+    subsystem.AddInitializer([](Particle& particle, double) {
+        ParticleModify::InitLifetime(particle, 10.0f);
+    });
+
+    subsystem.Emitt();
+    EXPECT_TRUE(rawGener->particles.empty());
+
+    rate_override = 2.0;
+    subsystem.Emitt();
+
+    ASSERT_EQ(rawGener->particles.size(), 2u);
+}
+
+TEST(ParticleMouseControlpoint, EmitterCountOverrideControlsInitialQuantity) {
+    wpscene::Emitter emitter;
+    emitter.name          = "boxrandom";
+    emitter.rate          = 1.0f;
+    emitter.instantaneous = 0;
+
+    auto override     = std::make_shared<wpscene::ParticleInstanceoverride>();
+    override->enabled = true;
+    override->count   = 3.0f;
+
+    auto op = WPParticleParser::genParticleEmittOp(emitter, false, override);
+
+    std::vector<Particle>       particles;
+    std::vector<ParticleInitOp> initializers;
+    std::array<ParticleControlpoint, 8> controlpoints {};
+
+    op(particles, initializers, 8, 1.0, controlpoints);
+
+    EXPECT_EQ(particles.size(), 3u);
+}
+
+TEST(ParticleMouseControlpoint, EmitterCountOverrideControlsRuntimeQuantity) {
+    wpscene::Emitter emitter;
+    emitter.name          = "boxrandom";
+    emitter.rate          = 1.0f;
+    emitter.instantaneous = 0;
+
+    auto override     = std::make_shared<wpscene::ParticleInstanceoverride>();
+    override->enabled = true;
+    override->count   = 1.0f;
+
+    auto op = WPParticleParser::genParticleEmittOp(emitter, false, override);
+
+    std::vector<Particle>       particles;
+    std::vector<ParticleInitOp> initializers;
+    std::array<ParticleControlpoint, 8> controlpoints {};
+
+    op(particles, initializers, 8, 1.0, controlpoints);
+    EXPECT_EQ(particles.size(), 1u);
+
+    override->count = 3.0f;
+    op(particles, initializers, 8, 1.0, controlpoints);
+
+    EXPECT_EQ(particles.size(), 4u);
+}
+
+TEST(ParticleMouseControlpoint, ProjectPropertiesDriveInitialAndRuntimeRateAndCountOverrides) {
+    Scene scene;
+    scene.frameTime = 1.0;
+    SceneRuntimeBootstrap bootstrap {
+        .project_properties = {
+            { "particle_rate", RuntimeScalarValue::Float(1.0f) },
+            { "particle_count", RuntimeScalarValue::Float(2.0f) },
+        },
+    };
+    scene.runtime = CreateSceneRuntimeContext(std::move(bootstrap));
+
+    auto* rawGener = new CapturingParticleRawGener();
+    auto  mesh     = std::make_shared<SceneMesh>(true);
+
+    ParticleSystem system(scene);
+    system.gener.reset(rawGener);
+
+    auto override = std::make_shared<wpscene::ParticleInstanceoverride>();
+    ASSERT_TRUE(override->FromJosn(nlohmann::json {
+        { "rate", { { "user", "particle_rate" }, { "value", 1.0f } } },
+        { "count", { { "user", "particle_count" }, { "value", 1.0f } } },
+    }));
+    for (const auto& [field, user] : override->bindings) {
+        std::unique_ptr<DynamicValue> value;
+        if (field == "rate") {
+            value = std::make_unique<DynamicValue>(override->rate);
+        } else if (field == "count") {
+            value = std::make_unique<DynamicValue>(override->count);
+        }
+        ASSERT_NE(value, nullptr);
+        auto* property_value = scene.runtime->FindPropertyValue(user);
+        ASSERT_NE(property_value, nullptr);
+        value->connect(property_value);
+        scene.runtime->RegisterDynamicValueListener(
+            std::move(value),
+            [override, field](const DynamicValue& value) {
+                if (field == "rate") {
+                    override->rate = value.getFloat();
+                } else if (field == "count") {
+                    override->count = value.getFloat();
+                }
+            });
+    }
+
+    ParticleSubSystem subsystem(system,
+                                mesh,
+                                16,
+                                1.0,
+                                1,
+                                1.0,
+                                ParticleSubSystem::SpawnType::STATIC,
+                                [](const Particle&, const ParticleRawGenSpec&) {
+                                });
+    subsystem.SetRateMultiplier([override] {
+        return override->enabled ? static_cast<double>(override->rate) : 1.0;
+    });
+    subsystem.AddEmitter(WPParticleParser::genParticleEmittOp(wpscene::Emitter {
+        .instantaneous = 0,
+        .name          = "boxrandom",
+        .rate          = 1.0f,
+    }, false, override));
+    subsystem.AddInitializer([](Particle& particle, double) {
+        ParticleModify::InitLifetime(particle, 10.0f);
+    });
+
+    subsystem.Emitt();
+    EXPECT_EQ(rawGener->particles.size(), 2u);
+
+    scene.runtime->ApplyProjectPropertyOverride({
+        { "particle_rate", RuntimeScalarValue::Float(2.0f) },
+        { "particle_count", RuntimeScalarValue::Float(3.0f) },
+    });
+    subsystem.Emitt();
+
+    EXPECT_EQ(rawGener->particles.size(), 8u);
 }
 
 } // namespace
