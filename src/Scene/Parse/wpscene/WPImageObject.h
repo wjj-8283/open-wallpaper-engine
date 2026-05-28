@@ -106,6 +106,7 @@ public:
 
     std::string                                puppet;
     std::vector<WPPuppetLayer::AnimationLayer> puppet_layers;
+    std::string                                attachment;
 };
 
 NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(WPEffectFbo, name, scale);

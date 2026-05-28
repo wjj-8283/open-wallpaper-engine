@@ -9,23 +9,27 @@ using namespace Eigen;
 
 Vector3d SceneCamera::GetPosition() const {
 	if(m_node) {
-		return Affine3d(m_node->GetLocalTrans()) * Vector3d::Zero();
+		m_node->UpdateTrans();
+		return Affine3d(m_node->ModelTrans()) * Vector3d::Zero();
 	}
 	return Vector3d::Zero();
 }
 
 Vector3d SceneCamera::GetDirection() const {
 	if(m_node) {
-		return (m_node->GetLocalTrans() * Vector4d(0.0f, 0.0f, -1.0f, 0.0f)).head<3>();
+		m_node->UpdateTrans();
+		return (m_node->ModelTrans() * Vector4d(0.0f, 0.0f, -1.0f, 0.0f)).head<3>();
 	}
 	return -Vector3d::UnitZ();
 }
 
 Matrix4d SceneCamera::GetViewMatrix() const {
+	const_cast<SceneCamera*>(this)->Update();
 	return m_viewMat;
 }
 
 Matrix4d SceneCamera::GetViewProjectionMatrix() const {
+	const_cast<SceneCamera*>(this)->Update();
 	return m_viewProjectionMat;
 }
 
@@ -33,11 +37,8 @@ void SceneCamera::CalculateViewProjectionMatrix() {
 	// CalculateViewMatrix
 	{
 		if(m_node) {
-			Affine3d nodeTrans(m_node->GetLocalTrans());
-			Vector3d eye = nodeTrans * Vector3d::Zero();
-			Vector3d center = nodeTrans * (-Vector3d::UnitZ());
-			Vector3d up = Vector3d::UnitY();
-			m_viewMat = LookAt(eye, center, up);
+			m_node->UpdateTrans();
+			m_viewMat = m_node->ModelTrans().inverse().eval();
 		} else 
 			m_viewMat = Matrix4d::Identity();
 	};

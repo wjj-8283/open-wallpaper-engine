@@ -211,6 +211,7 @@ static void AddCustomShaderGraphPass(
     SceneNode* visibility_node,
     SceneMaterial& material,
     std::string_view output,
+    std::string output_override,
     i32 imgId,
     std::string camera_override,
     std::size_t submesh_index,
@@ -223,6 +224,7 @@ static void AddCustomShaderGraphPass(
          node,
          visibility_node,
          output,
+         output_override,
          imgId,
          &rgraph,
          &scene,
@@ -233,7 +235,10 @@ static void AddCustomShaderGraphPass(
          register_base_link_output](
             rg::RenderGraphBuilder& builder, vulkan::CustomShaderPass::Desc& pdesc) {
             const auto& pass = builder.workPassNode();
-            const auto  resolved_output = scene.ResolveRenderTargetName(output);
+            const auto  pass_output = output_override.empty()
+                ? std::string(output)
+                : std::move(output_override);
+            const auto  resolved_output = scene.ResolveRenderTargetName(pass_output);
             pdesc.node            = node;
             pdesc.visibility_node = visibility_node != nullptr ? visibility_node : node;
             pdesc.output          = resolved_output;
@@ -268,7 +273,7 @@ static void AddCustomShaderGraphPass(
                         extra.use_mipmap_framebuffer = true;
                 }
 
-                if (url == output) {
+                if (url == resolved_output) {
                     builder.markSelfWrite(input);
                     input = rg::addCopyPass(rgraph, input);
                 }
@@ -367,6 +372,7 @@ static void ToGraphPass(
                     visibility_node,
                     *submesh_material,
                     output,
+                    submeshes[submesh_index].output_override,
                     imgId,
                     camera_override,
                     submesh_index,
@@ -385,6 +391,7 @@ static void ToGraphPass(
                     visibility_node,
                     *material,
                     output,
+                    {},
                     imgId,
                     camera_override,
                     0,

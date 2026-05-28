@@ -4,8 +4,10 @@
 #include <array>
 #include <vector>
 #include <memory>
+#include <span>
 #include <Eigen/Dense>
 
+#include "Scene/SceneMesh.h"
 #include "WPPuppet.hpp"
 
 namespace wallpaper
@@ -31,6 +33,7 @@ struct WPMdl {
     struct Mesh {
         std::string mat_json_file;
         uint32_t    flag_a { 0 };
+        bool        has_flag_a2_one { false };
         uint32_t    flag { 0 };
         std::array<float, 3> aabb_min {};
         std::array<float, 3> aabb_max {};
@@ -54,6 +57,14 @@ struct WPMdl {
         std::vector<std::array<float, 2>> part_uv2;
         std::vector<uint32_t>             part_uv2_pad;
         std::vector<Part>                 parts;
+
+        struct MaskBlock {
+            uint32_t              leading_a { 0 };
+            std::string           mat_json_file;
+            std::vector<uint32_t> part_ids_a;
+            std::vector<uint32_t> part_ids_b;
+        };
+        std::vector<MaskBlock> masks;
     };
 
     Header mdl_header;
@@ -61,6 +72,23 @@ struct WPMdl {
     i32 mdlv { 13 };
     i32 mdls { 1 };
     i32 mdla { 1 };
+    i32 mdle { 0 };
+    i32 mdmp { 0 };
+
+    struct MorphSectionData {
+        uint32_t                             shape_id { 0 };
+        std::string                          tag;
+        uint32_t                             hash { 0 };
+        std::vector<std::array<uint16_t, 3>> vertices;
+        std::vector<uint16_t>                vertex_trailers;
+        std::vector<uint8_t>                 trailer;
+    };
+    struct MorphSection {
+        float                         event_time { 0.0f };
+        uint16_t                      event_id { 0 };
+        std::vector<MorphSectionData> sections;
+    };
+    std::vector<MorphSection> morph_sections;
 
     std::string mat_json_file;
     struct Vertex {
@@ -84,8 +112,6 @@ struct WPMdl {
     // uniform mat4x3 g_Bones[BONECOUNT]
 };
 
-class SceneMesh;
-
 class WPMdlParser {
 public:
     static bool Parse(std::string_view path, fs::VFS&, WPMdl&);
@@ -93,7 +119,10 @@ public:
     static void AddPuppetShaderInfo(WPShaderInfo& info, const WPMdl& mdl);
     static void AddPuppetMatInfo(wpscene::WPMaterial& mat, const WPMdl& mdl);
 
-    static void GenPuppetMesh(SceneMesh& mesh, const WPMdl& mdl);
+    static void GenMeshFromMdl(SceneMesh::Submesh& submesh, const WPMdl::Mesh& src);
+    static void GenMaskSubmeshFromMdl(SceneMesh::Submesh& submesh, const WPMdl::Mesh& src,
+                                      std::span<const uint32_t> part_indices);
+    static void GenPuppetMesh(SceneMesh& mesh, const WPMdl& mdl, bool include_masks = true);
 };
 
 } // namespace wallpaper

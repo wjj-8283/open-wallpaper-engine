@@ -555,7 +555,7 @@ json DumpWorkshop(const std::string& workshop_dir, std::string& err) {
                 std::array<double, 4> col_sums { 0, 0, 0, 0 };
                 for (int c = 0; c < 4; ++c)
                     for (int r = 0; r < 4; ++r)
-                        col_sums[static_cast<std::size_t>(c)] += b.transform.matrix()(r, c);
+                        col_sums[static_cast<std::size_t>(c)] += b.local_bind.matrix()(r, c);
                 jb["transform_col_sums"] = col_sums;
                 bones.push_back(std::move(jb));
             }
@@ -569,9 +569,9 @@ json DumpWorkshop(const std::string& workshop_dir, std::string& err) {
                 ja["length"]   = a.length;
                 ja["name"]     = a.name;
                 ja["mode"]     = static_cast<int>(a.mode);
-                ja["bone_track_count"] = static_cast<int>(a.bframes_array.size());
+                ja["bone_track_count"] = static_cast<int>(a.bone_tracks.size());
                 int total_frames = 0;
-                for (const auto& bf : a.bframes_array)
+                for (const auto& bf : a.bone_tracks)
                     total_frames += static_cast<int>(bf.frames.size());
                 ja["total_bone_frames"] = total_frames;
                 anims.push_back(std::move(ja));

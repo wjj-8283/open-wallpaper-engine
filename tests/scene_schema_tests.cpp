@@ -7,6 +7,7 @@
 #include <span>
 #include <string>
 #include <vector>
+#include <cstring>
 
 #include <gtest/gtest.h>
 #include <nlohmann/json.hpp>
@@ -18,6 +19,8 @@
 #include "Project/ProjectProperties.hpp"
 #include "Runtime/DynamicValue.hpp"
 #include "Runtime/SceneRuntimeContext.hpp"
+#include "Scene/SceneCamera.h"
+#include "Scene/SceneNode.h"
 #include "SpecTexs.hpp"
 #include "WPShaderValueUpdater.hpp"
 #include "WPSceneParser.hpp"
@@ -67,6 +70,11 @@ public:
     void U32(uint32_t value) { RawValue(value); }
     void I32(int32_t value) { RawValue(value); }
     void F32(float value) { RawValue(value); }
+    std::size_t Size() const { return m_bytes.size(); }
+    void PatchU32(std::size_t offset, uint32_t value) {
+        ASSERT_LE(offset + sizeof(value), m_bytes.size());
+        std::memcpy(m_bytes.data() + offset, &value, sizeof(value));
+    }
 
     std::string TakeString() {
         return std::string(reinterpret_cast<const char*>(m_bytes.data()), m_bytes.size());
@@ -87,6 +95,14 @@ private:
 constexpr uint32_t kSceneTestSkinUvFlag = 0x00800000u | 0x01000000u | 0x00000008u;
 constexpr uint32_t kSceneTestVideoFlag = 1u << 5;
 
+void WriteMeshOnlyPuppetVertex(Bytes& b, float x, float y, float u) {
+    b.F32(x);
+    b.F32(y);
+    b.F32(0.0f);
+    b.F32(u);
+    b.F32(0.5f);
+}
+
 void WritePuppetVertex(Bytes& b, float x, float y, float u, uint32_t bone = 0) {
     b.F32(x);
     b.F32(y);
@@ -101,6 +117,42 @@ void WritePuppetVertex(Bytes& b, float x, float y, float u, uint32_t bone = 0) {
     b.F32(0.0f);
     b.F32(u);
     b.F32(0.5f);
+}
+
+void WriteMeshOnlyPuppetMesh(Bytes& b, std::string_view material, uint32_t part_id) {
+    b.Str(material);
+    b.U32(0);
+    b.F32(-1.0f);
+    b.F32(-1.0f);
+    b.F32(0.0f);
+    b.F32(1.0f);
+    b.F32(1.0f);
+    b.F32(0.0f);
+    b.U32(0x00000008u);
+    b.U32(3u * 20u);
+    WriteMeshOnlyPuppetVertex(b, 0.0f, 0.0f, 0.0f);
+    WriteMeshOnlyPuppetVertex(b, 1.0f, 0.0f, 0.5f);
+    WriteMeshOnlyPuppetVertex(b, 0.0f, 1.0f, 1.0f);
+    b.U32(6);
+    b.U16(0);
+    b.U16(1);
+    b.U16(2);
+    b.U8(1);
+    b.U8(1);
+    b.U16(0);
+    b.U8(0);
+    b.U32(36);
+    for (uint32_t i = 0; i < 3; ++i) {
+        b.F32(0.25f * static_cast<float>(i));
+        b.F32(0.5f);
+        b.U32(0);
+    }
+    b.U8(1);
+    b.U32(16);
+    b.U32(part_id);
+    b.U32(0);
+    b.U32(0);
+    b.U32(3);
 }
 
 void WritePuppetMesh(Bytes& b, std::string_view material, uint32_t part_id) {
@@ -147,6 +199,18 @@ void WriteIdentity3x4(Bytes& b) {
     }
 }
 
+void WriteTranslate3x4(Bytes& b, float x, float y, float z) {
+    for (int col = 0; col < 4; ++col) {
+        for (int row = 0; row < 4; ++row) {
+            float value = row == col ? 1.0f : 0.0f;
+            if (col == 3 && row == 0) value = x;
+            if (col == 3 && row == 1) value = y;
+            if (col == 3 && row == 2) value = z;
+            b.F32(value);
+        }
+    }
+}
+
 std::string BuildTwoMeshPuppetMdlFixture() {
     Bytes b;
     b.Stamp("MDL", 21);
@@ -172,14 +236,88 @@ std::string BuildTwoMeshPuppetMdlFixture() {
     return b.TakeString();
 }
 
-std::string BuildMeshOnlyPuppetMdlFixture() {
+std::string BuildMaskedTwoMeshPuppetMdlFixture() {
     Bytes b;
-    b.Stamp("MDL", 21);
+    b.Stamp("MDL", 23);
     b.U32(kSceneTestSkinUvFlag);
     b.U32(1);
     b.U32(2);
     WritePuppetMesh(b, "mat/head.json", 10);
+    b.U32(1);
+    b.U32(7);
+    b.U32(0);
+    b.Str("mat/head_mask.json");
+    b.U32(0);
+    b.U32(1);
+    b.U32(0);
+    b.U32(1);
+    b.U32(0);
     WritePuppetMesh(b, "mat/eyes.json", 20);
+    b.U32(0);
+
+    b.Stamp("MDLS", 1);
+    b.U32(0);
+    b.U16(1);
+    b.U16(0);
+    b.Str("root");
+    b.I32(0);
+    b.U32(0xFFFFFFFFu);
+    b.U32(64);
+    WriteIdentity3x4(b);
+    b.Str("{}");
+
+    b.Stamp("MDLA", 0);
+    b.U8(0);
+    return b.TakeString();
+}
+
+std::string BuildAttachmentPuppetMdlFixture() {
+    Bytes b;
+    b.Stamp("MDL", 21);
+    b.U32(kSceneTestSkinUvFlag);
+    b.U32(1);
+    b.U32(1);
+    WritePuppetMesh(b, "mat/head.json", 10);
+
+    b.Stamp("MDLS", 1);
+    b.U32(0);
+    b.U16(2);
+    b.U16(0);
+    b.Str("root");
+    b.I32(0);
+    b.U32(0xFFFFFFFFu);
+    b.U32(64);
+    WriteIdentity3x4(b);
+    b.Str("{}");
+    b.Str("head");
+    b.I32(0);
+    b.U32(0);
+    b.U32(64);
+    WriteIdentity3x4(b);
+    b.Str("{}");
+
+    b.Stamp("MDAT", 1);
+    const auto mdat_end_offset_pos = b.Size();
+    b.U32(0);
+    b.U16(1);
+    b.U16(1);
+    b.Str("hat_anchor");
+    WriteTranslate3x4(b, 4.0f, 5.0f, 6.0f);
+    b.PatchU32(mdat_end_offset_pos, static_cast<uint32_t>(b.Size()));
+
+    b.Stamp("MDLA", 0);
+    b.U8(0);
+    return b.TakeString();
+}
+
+std::string BuildMeshOnlyPuppetMdlFixture() {
+    Bytes b;
+    b.Stamp("MDL", 21);
+    b.U32(0x00000008u);
+    b.U32(1);
+    b.U32(2);
+    WriteMeshOnlyPuppetMesh(b, "mat/head.json", 10);
+    WriteMeshOnlyPuppetMesh(b, "mat/eyes.json", 20);
     return b.TakeString();
 }
 
@@ -191,9 +329,14 @@ std::string BuildLegacySingleMeshPuppetMdlFixture() {
     b.U32(1);
     b.Str("legacy.json");
     b.U32(0);
-    b.U32(52);
+    b.U32(3u * 52u);
     WritePuppetVertex(b, 0.0f, 0.0f, 0.0f);
-    b.U32(0);
+    WritePuppetVertex(b, 1.0f, 0.0f, 0.5f);
+    WritePuppetVertex(b, 0.0f, 1.0f, 1.0f);
+    b.U32(6);
+    b.U16(0);
+    b.U16(1);
+    b.U16(2);
 
     b.Stamp("MDLS", 1);
     b.U32(0);
@@ -357,6 +500,23 @@ void AddPuppetSlotRenderTargetSceneFiles(std::map<std::string, std::string>& fil
     files["/mat/eyes.json"] = PuppetMaterialJson("eyesimage", "_rt_4FrameBuffer");
 }
 
+void AddMaskedTwoMeshPuppetSceneFiles(std::map<std::string, std::string>& files) {
+    AddPuppetImageSceneFiles(files);
+    files["/puppet.mdl"] = BuildMaskedTwoMeshPuppetMdlFixture();
+    files["/mat/head_mask.json"] = PuppetMaterialJson("headmaskimage", "head_mask.tex");
+    files["/materials/head_mask.tex.tex"] = "";
+    files["/materials/mat/head_mask.json.tex"] = "";
+    files["/shaders/clippingmaskimage4.vert"] = files["/shaders/headimage.vert"];
+    files["/shaders/clippingmaskimage4.frag"] = R"(
+uniform sampler2D g_Texture0;
+uniform sampler2D g_Texture1;
+varying vec2 v_TexCoord;
+void main() {
+  gl_FragColor = texture(g_Texture0, v_TexCoord) * texture(g_Texture1, v_TexCoord);
+}
+)";
+}
+
 void AddMultiVideoImageSceneFiles(std::map<std::string, std::string>& files) {
     files["/image.json"] =
         R"({"width":64,"height":32,"material":"mat/multi_video.json"})";
@@ -494,6 +654,14 @@ std::shared_ptr<SceneNode> FindRootChildByName(const Scene& scene, std::string_v
         });
     if (it == root_children.end()) return nullptr;
     return *it;
+}
+
+SceneNode* FindFirstChildByName(SceneNode& node, std::string_view name) {
+    auto child = std::find_if(node.GetChildren().begin(), node.GetChildren().end(),
+                              [name](const auto& candidate) {
+                                  return candidate != nullptr && candidate->Name() == name;
+                              });
+    return child == node.GetChildren().end() ? nullptr : child->get();
 }
 
 void MountBloomSceneFiles(fs::VFS& vfs) {
@@ -808,7 +976,7 @@ TEST(SceneSchema, ImageAbsorbsDependenciesInstanceAnimationLayersAndBindings) {
     wpscene::WPImageObject image;
     const auto             json = nlohmann::json::parse(R"({
       "image":"image.json", "id":7, "name":"image layer",
-      "dependencies":[1,2], "origin":[1,2,3],
+      "dependencies":[1,2], "origin":[1,2,3], "attachment":"hat_anchor",
       "alpha":{"value":0.5,"animation":{"c0":[{"frame":0,"value":0.5}],"options":{"fps":30}}},
       "visible":{"value":true,"script":"export function update() { return true; }",
         "scriptproperties":{"speed":{"value":1.0}}},
@@ -820,6 +988,7 @@ TEST(SceneSchema, ImageAbsorbsDependenciesInstanceAnimationLayersAndBindings) {
 
     ASSERT_TRUE(image.FromJson(json, vfs));
     EXPECT_EQ(image.dependencies, (std::vector<int32_t> { 1, 2 }));
+    EXPECT_EQ(image.attachment, "hat_anchor");
     ASSERT_TRUE(image.instance.enabled);
     EXPECT_EQ(image.instance.id, 42);
     EXPECT_EQ(image.instance.combos.at("BLENDMODE"), 1);
@@ -1183,6 +1352,334 @@ TEST(SceneSchema, SchemaOnlyObjectPreservesRenderableChildParentTransform) {
 
     child->UpdateTrans();
     EXPECT_NEAR(child->ModelTrans()(0, 3), 30.0, 1.0e-5);
+}
+
+TEST(SceneSchema, CameraUsesParentModelTransform) {
+    auto parent = std::make_shared<SceneNode>();
+    parent->SetTranslate({ 10.0f, 20.0f, 30.0f });
+    parent->SetRotation({ 0.0f, 0.0f, static_cast<float>(EIGEN_PI / 2.0) });
+
+    auto child = std::make_shared<SceneNode>();
+    child->SetTranslate({ 2.0f, 3.0f, 4.0f });
+    parent->AppendChild(child);
+
+    SceneCamera camera(640, 360, 0.01f, 100.0f);
+    camera.AttatchNode(child);
+    camera.Update();
+
+    const auto position = camera.GetPosition();
+    EXPECT_NEAR(position.x(), 7.0, 1.0e-5);
+    EXPECT_NEAR(position.y(), 22.0, 1.0e-5);
+    EXPECT_NEAR(position.z(), 34.0, 1.0e-5);
+
+    const auto direction = camera.GetDirection();
+    EXPECT_NEAR(direction.x(), 0.0, 1.0e-5);
+    EXPECT_NEAR(direction.y(), 0.0, 1.0e-5);
+    EXPECT_NEAR(direction.z(), -1.0, 1.0e-5);
+
+    child->UpdateTrans();
+    const auto expected_view = child->ModelTrans().inverse().eval();
+    const auto actual_view   = camera.GetViewMatrix();
+    EXPECT_TRUE(actual_view.isApprox(expected_view, 1.0e-5));
+}
+
+TEST(SceneSchema, CameraViewGetterUpdatesAfterParentTransformChange) {
+    auto parent = std::make_shared<SceneNode>();
+    auto child  = std::make_shared<SceneNode>();
+    parent->AppendChild(child);
+
+    SceneCamera camera(640, 360, 0.01f, 100.0f);
+    camera.AttatchNode(child);
+    const auto initial_view = camera.GetViewMatrix();
+    EXPECT_NEAR(initial_view(0, 3), 0.0, 1.0e-5);
+
+    parent->SetTranslate({ 12.0f, 0.0f, 0.0f });
+    const auto updated_view = camera.GetViewMatrix();
+    EXPECT_NEAR(updated_view(0, 3), -12.0, 1.0e-5);
+}
+
+TEST(SceneSchema, CameraViewMatrixUsesScaledModelTransformInverse) {
+    auto node = std::make_shared<SceneNode>();
+    node->SetTranslate({ 4.0f, 6.0f, 8.0f });
+    node->SetScale({ 2.0f, 3.0f, 4.0f });
+
+    SceneCamera camera(640, 360, 0.01f, 100.0f);
+    camera.AttatchNode(node);
+
+    node->UpdateTrans();
+    const auto expected_view = node->ModelTrans().inverse().eval();
+    const auto actual_view   = camera.GetViewMatrix();
+    EXPECT_TRUE(actual_view.isApprox(expected_view, 1.0e-5));
+}
+
+TEST(SceneSchema, ParserPreservesDeclarationOrderWhenContainersAttachLate) {
+    fs::VFS vfs;
+    MountSceneFiles(vfs);
+    audio::SoundManager sound_manager;
+    WPSceneParser       parser;
+    const std::string   scene = R"({
+      "camera": {"center":[0,0,0], "eye":[0,0,1], "up":[0,1,0]},
+      "general": {
+        "ambientcolor":[0.2,0.2,0.2], "skylightcolor":[0.3,0.3,0.3],
+        "clearcolor":[0,0,0], "cameraparallax":false,
+        "cameraparallaxamount":0, "cameraparallaxdelay":0,
+        "cameraparallaxmouseinfluence":0,
+        "orthogonalprojection":{"width":640,"height":360}
+      },
+      "objects": [
+        {"id":200,"name":"early container","origin":[10,0,0],"visible":true},
+        {"id":201,"name":"middle sibling","image":"image.json",
+         "origin":[20,0,0],"scale":[1,1,1],"angles":[0,0,0],"visible":true},
+        {"id":202,"parent":200,"name":"late child","image":"image.json",
+         "origin":[5,0,0],"scale":[1,1,1],"angles":[0,0,0],"visible":true}
+      ]
+    })";
+
+    auto parsed = parser.Parse("declaration-order-containers", scene, vfs, sound_manager);
+    ASSERT_NE(parsed, nullptr);
+    ASSERT_NE(parsed->sceneGraph, nullptr);
+
+    const auto& root_children = parsed->sceneGraph->GetChildren();
+    std::vector<std::shared_ptr<SceneNode>> named_root_children;
+    for (const auto& child : root_children) {
+        if (child != nullptr && ! child->Name().empty()) {
+            named_root_children.push_back(child);
+        }
+    }
+    ASSERT_GE(named_root_children.size(), 2u);
+    const auto& first = named_root_children[0];
+    const auto& second = named_root_children[1];
+    ASSERT_NE(first, nullptr);
+    ASSERT_NE(second, nullptr);
+    EXPECT_EQ(first->Name(), "early container");
+    EXPECT_EQ(second->Name(), "middle sibling");
+
+    ASSERT_EQ(first->GetChildren().size(), 1u);
+    const auto& late_child = first->GetChildren().front();
+    ASSERT_NE(late_child, nullptr);
+    EXPECT_EQ(late_child->Name(), "late child");
+    EXPECT_EQ(late_child->Parent(), first.get());
+    late_child->UpdateTrans();
+    EXPECT_NEAR(late_child->ModelTrans()(0, 3), 15.0, 1.0e-5);
+}
+
+TEST(SceneSchema, ParserKeepsForwardReferencedParentInDeclarationOrder) {
+    fs::VFS vfs;
+    MountSceneFiles(vfs);
+    audio::SoundManager sound_manager;
+    WPSceneParser       parser;
+    const std::string   scene = R"({
+      "camera": {"center":[0,0,0], "eye":[0,0,1], "up":[0,1,0]},
+      "general": {
+        "ambientcolor":[0.2,0.2,0.2], "skylightcolor":[0.3,0.3,0.3],
+        "clearcolor":[0,0,0], "cameraparallax":false,
+        "cameraparallaxamount":0, "cameraparallaxdelay":0,
+        "cameraparallaxmouseinfluence":0,
+        "orthogonalprojection":{"width":640,"height":360}
+      },
+      "objects": [
+        {"id":302,"parent":300,"name":"early child","image":"image.json",
+         "origin":[5,0,0],"scale":[1,1,1],"angles":[0,0,0],"visible":true},
+        {"id":301,"name":"middle root","image":"image.json",
+         "origin":[20,0,0],"scale":[1,1,1],"angles":[0,0,0],"visible":true},
+        {"id":300,"name":"late parent","origin":[10,0,0],"visible":true}
+      ]
+    })";
+
+    auto parsed = parser.Parse("forward-parent-declaration-order", scene, vfs, sound_manager);
+    ASSERT_NE(parsed, nullptr);
+    ASSERT_NE(parsed->sceneGraph, nullptr);
+
+    const auto& root_children = parsed->sceneGraph->GetChildren();
+    std::vector<std::shared_ptr<SceneNode>> named_root_children;
+    for (const auto& child : root_children) {
+        if (child != nullptr && ! child->Name().empty()) {
+            named_root_children.push_back(child);
+        }
+    }
+
+    ASSERT_GE(named_root_children.size(), 2u);
+    ASSERT_NE(named_root_children[0], nullptr);
+    ASSERT_NE(named_root_children[1], nullptr);
+    EXPECT_EQ(named_root_children[0]->Name(), "middle root");
+    EXPECT_EQ(named_root_children[1]->Name(), "late parent");
+
+    ASSERT_EQ(named_root_children[1]->GetChildren().size(), 1u);
+    const auto& early_child = named_root_children[1]->GetChildren().front();
+    ASSERT_NE(early_child, nullptr);
+    EXPECT_EQ(early_child->Name(), "early child");
+    EXPECT_EQ(early_child->Parent(), named_root_children[1].get());
+    early_child->UpdateTrans();
+    EXPECT_NEAR(early_child->ModelTrans()(0, 3), 15.0, 1.0e-5);
+}
+
+TEST(SceneSchema, ImageEffectFinalTransformIncludesDeferredParentAttachment) {
+    fs::VFS vfs;
+    auto files = std::map<std::string, std::string> {
+        { "/image.json", R"({"width":64,"height":32,"material":"mat.json"})" },
+        { "/mat.json",
+          R"({"passes":[{"blending":"translucent","cullmode":"nocull","depthtest":"disabled","depthwrite":"disabled","shader":"genericimage","textures":["a.tex"]}]})" },
+        { "/effects/copy/effect.json",
+          R"({"name":"copy","passes":[{"material":"effect_mat.json","bind":[{"name":"previous","index":0}]}]})" },
+        { "/effect_mat.json",
+          R"({"passes":[{"blending":"translucent","cullmode":"nocull","depthtest":"disabled","depthwrite":"disabled","shader":"genericimage","textures":[null]}]})" },
+        { "/shaders/genericimage.vert",
+          R"(attribute vec3 a_Position;
+attribute vec2 a_TexCoord;
+varying vec2 v_TexCoord;
+void main() {
+  gl_Position = vec4(a_Position, 1.0);
+  v_TexCoord = a_TexCoord;
+}
+)" },
+        { "/shaders/genericimage.frag",
+          R"(uniform sampler2D g_Texture0;
+varying vec2 v_TexCoord;
+void main() {
+  gl_FragColor = texture(g_Texture0, v_TexCoord);
+}
+)" },
+        { "/materials/a.tex.tex", "" },
+    };
+    EXPECT_TRUE(vfs.Mount("/assets", std::make_unique<MemoryFs>(std::move(files))));
+    audio::SoundManager sound_manager;
+    WPSceneParser       parser;
+    const std::string   scene = R"({
+      "camera": {"center":[0,0,0], "eye":[0,0,1], "up":[0,1,0]},
+      "general": {
+        "ambientcolor":[0.2,0.2,0.2], "skylightcolor":[0.3,0.3,0.3],
+        "clearcolor":[0,0,0], "cameraparallax":false,
+        "cameraparallaxamount":0, "cameraparallaxdelay":0,
+        "cameraparallaxmouseinfluence":0,
+        "orthogonalprojection":{"width":640,"height":360}
+      },
+      "objects": [
+        {"id":300,"name":"effect parent","origin":[40,0,0],"visible":true},
+        {"id":301,"parent":300,"name":"nested effect","image":"image.json",
+         "origin":[6,0,0],"scale":[1,1,1],"angles":[0,0,0],"visible":true,
+         "effects":[{"file":"effects/copy/effect.json","id":302,"visible":true}]}
+      ]
+    })";
+
+    auto parsed = parser.Parse("nested-effect-final-transform", scene, vfs, sound_manager);
+    ASSERT_NE(parsed, nullptr);
+    auto parent = FindRootChildByName(*parsed, "effect parent");
+    ASSERT_NE(parent, nullptr);
+    auto* child = FindFirstChildByName(*parent, "nested effect");
+    ASSERT_NE(child, nullptr);
+    ASSERT_FALSE(child->Camera().empty());
+
+    auto camera = parsed->cameras.find(child->Camera());
+    ASSERT_NE(camera, parsed->cameras.end());
+    ASSERT_NE(camera->second, nullptr);
+    ASSERT_TRUE(camera->second->HasImgEffect());
+
+    auto& final_node = camera->second->GetImgEffect()->FinalNode();
+    final_node.UpdateTrans();
+    EXPECT_NEAR(final_node.RenderTrans()(0, 3), 46.0, 1.0e-5);
+}
+
+TEST(SceneSchema, ImageChildAttachmentAnchorsToParentPuppetMdat) {
+    fs::VFS vfs;
+    auto files = std::map<std::string, std::string> {
+        { "/puppet_image.json",
+          R"({"width":64,"height":32,"material":"mat/base.json","puppet":"puppet.mdl"})" },
+        { "/puppet.mdl", BuildAttachmentPuppetMdlFixture() },
+        { "/mat/base.json", PuppetMaterialJson("baseimage", "base.tex") },
+        { "/mat/head.json", PuppetMaterialJson("headimage", "head.tex") },
+        { "/child_image.json", R"({"width":16,"height":8,"material":"mat/child.json"})" },
+        { "/mat/child.json", PuppetMaterialJson("childimage", "child.tex") },
+        { "/shaders/baseimage.vert", R"(
+attribute vec3 a_Position;
+attribute vec2 a_TexCoord;
+varying vec2 v_TexCoord;
+void main() {
+  gl_Position = vec4(a_Position, 1.0);
+  v_TexCoord = a_TexCoord;
+}
+)" },
+        { "/shaders/baseimage.frag", R"(
+uniform sampler2D g_Texture0;
+varying vec2 v_TexCoord;
+void main() {
+  gl_FragColor = texture(g_Texture0, v_TexCoord);
+}
+)" },
+        { "/shaders/headimage.vert", R"(
+attribute vec3 a_Position;
+attribute vec2 a_TexCoord;
+#if SKINNING
+attribute uvec4 a_BlendIndices;
+attribute vec4 a_BlendWeights;
+uniform mat4x3 g_Bones[BONECOUNT];
+#endif
+varying vec2 v_TexCoord;
+void main() {
+  gl_Position = vec4(a_Position, 1.0);
+  v_TexCoord = a_TexCoord;
+}
+)" },
+        { "/shaders/headimage.frag", R"(
+uniform sampler2D g_Texture0;
+varying vec2 v_TexCoord;
+void main() {
+  gl_FragColor = texture(g_Texture0, v_TexCoord);
+}
+)" },
+        { "/shaders/childimage.vert", R"(
+attribute vec3 a_Position;
+attribute vec2 a_TexCoord;
+varying vec2 v_TexCoord;
+void main() {
+  gl_Position = vec4(a_Position, 1.0);
+  v_TexCoord = a_TexCoord;
+}
+)" },
+        { "/shaders/childimage.frag", R"(
+uniform sampler2D g_Texture0;
+varying vec2 v_TexCoord;
+void main() {
+  gl_FragColor = texture(g_Texture0, v_TexCoord);
+}
+)" },
+        { "/materials/base.tex.tex", "" },
+        { "/materials/head.tex.tex", "" },
+        { "/materials/child.tex.tex", "" },
+    };
+    ASSERT_TRUE(vfs.Mount("/assets", std::make_unique<MemoryFs>(std::move(files))));
+
+    audio::SoundManager sound_manager;
+    WPSceneParser       parser;
+    const std::string   scene = R"({
+      "camera": {"center":[0,0,0], "eye":[0,0,1], "up":[0,1,0]},
+      "general": {
+        "ambientcolor":[0.2,0.2,0.2], "skylightcolor":[0.3,0.3,0.3],
+        "clearcolor":[0,0,0], "cameraparallax":false,
+        "cameraparallaxamount":0, "cameraparallaxdelay":0,
+        "cameraparallaxmouseinfluence":0,
+        "orthogonalprojection":{"width":640,"height":360}
+      },
+      "objects": [
+        {"id":300,"name":"puppet parent","image":"puppet_image.json",
+         "origin":[10,20,0],"scale":[1,1,1],"angles":[0,0,0],"visible":true},
+        {"id":301,"name":"hat child","parent":300,"attachment":"hat_anchor",
+         "image":"child_image.json","origin":[1,2,3],"scale":[1,1,1],
+         "angles":[0,0,0],"visible":true}
+      ]
+    })";
+
+    auto parsed = parser.Parse("attachment-child", scene, vfs, sound_manager);
+    ASSERT_NE(parsed, nullptr);
+    auto parent = FindRootChildByName(*parsed, "puppet parent");
+    ASSERT_NE(parent, nullptr);
+    auto* child = FindFirstChildByName(*parent, "hat child");
+    ASSERT_NE(child, nullptr);
+    EXPECT_EQ(child->Parent(), parent.get());
+
+    child->UpdateTrans();
+    EXPECT_NEAR(child->ModelTrans()(0, 3), 15.0, 1.0e-5);
+    EXPECT_NEAR(child->ModelTrans()(1, 3), 27.0, 1.0e-5);
+    EXPECT_NEAR(child->ModelTrans()(2, 3), 9.0, 1.0e-5);
 }
 
 TEST(SceneSchema, ParserUsesStableRuntimeNamesForDuplicateGenericLayerNames) {
@@ -1627,6 +2124,69 @@ TEST(SceneSchema, ParserKeepsMeshOnlyPuppetMaterialSlotsWithoutMdlsBlock) {
     EXPECT_EQ(mesh.MaterialForSlot(1)->textures[0], "eyes.tex");
 }
 
+TEST(SceneSchema, ParserAlignsMaskedMultiMeshPuppetMaterialSlotsWithSubmeshes) {
+    auto files = std::map<std::string, std::string> {};
+    AddMaskedTwoMeshPuppetSceneFiles(files);
+    fs::VFS vfs;
+    EXPECT_TRUE(vfs.Mount("/assets", std::make_unique<MemoryFs>(std::move(files))));
+    audio::SoundManager sound_manager;
+    WPSceneParser       parser;
+
+    auto parsed = parser.Parse("masked-puppet-slots", BasicPuppetSceneJson(), vfs, sound_manager);
+
+    ASSERT_NE(parsed, nullptr);
+    auto node = FindRootChildByName(*parsed, "puppet image");
+    ASSERT_NE(node, nullptr);
+    ASSERT_NE(node->Mesh(), nullptr);
+    const auto& mesh = *node->Mesh();
+    ASSERT_EQ(mesh.Submeshes().size(), 4u);
+    ASSERT_EQ(mesh.MaterialSlots().size(), 4u);
+
+    EXPECT_EQ(mesh.Submeshes()[0].material_slot, 0u);
+    EXPECT_EQ(mesh.Submeshes()[1].material_slot, 1u);
+    EXPECT_EQ(mesh.Submeshes()[1].output_override, "_rt_puppet_mask");
+    EXPECT_EQ(mesh.Submeshes()[2].material_slot, 2u);
+    EXPECT_EQ(mesh.Submeshes()[3].material_slot, 3u);
+
+    ASSERT_NE(mesh.MaterialForSlot(0), nullptr);
+    ASSERT_NE(mesh.MaterialForSlot(1), nullptr);
+    ASSERT_NE(mesh.MaterialForSlot(2), nullptr);
+    ASSERT_NE(mesh.MaterialForSlot(3), nullptr);
+    EXPECT_EQ(mesh.MaterialForSlot(0)->name, "headimage");
+    EXPECT_EQ(mesh.MaterialForSlot(1)->name, "clippingmaskimage4");
+    EXPECT_EQ(mesh.MaterialForSlot(2)->name, "headimage");
+    EXPECT_EQ(mesh.MaterialForSlot(3)->name, "eyesimage");
+    ASSERT_FALSE(mesh.MaterialForSlot(2)->textures.empty());
+    ASSERT_FALSE(mesh.MaterialForSlot(3)->textures.empty());
+    EXPECT_EQ(mesh.MaterialForSlot(2)->textures[0], "head.tex");
+    EXPECT_EQ(mesh.MaterialForSlot(3)->textures[0], "eyes.tex");
+}
+
+TEST(SceneSchema, ParserBuildsMeshOnlyPuppetSubmeshesWithMeshVertexLayout) {
+    auto files = std::map<std::string, std::string> {};
+    AddPuppetImageSceneFiles(files, true, false, true);
+    fs::VFS vfs;
+    EXPECT_TRUE(vfs.Mount("/assets", std::make_unique<MemoryFs>(std::move(files))));
+    audio::SoundManager sound_manager;
+    WPSceneParser       parser;
+
+    auto parsed = parser.Parse("mesh-only-puppet-layout", BasicPuppetSceneJson(), vfs, sound_manager);
+
+    ASSERT_NE(parsed, nullptr);
+    auto node = FindRootChildByName(*parsed, "puppet image");
+    ASSERT_NE(node, nullptr);
+    ASSERT_NE(node->Mesh(), nullptr);
+    const auto& mesh = *node->Mesh();
+    ASSERT_EQ(mesh.Submeshes().size(), 2u);
+    ASSERT_EQ(mesh.Submeshes()[0].VertexCount(), 1u);
+    const auto& attrs = mesh.Submeshes()[0].GetVertexArray(0).Attributes();
+    ASSERT_EQ(attrs.size(), 2u);
+    EXPECT_EQ(attrs[0].name, std::string(WE_IN_POSITION));
+    EXPECT_EQ(attrs[0].type, VertexType::FLOAT3);
+    EXPECT_EQ(attrs[1].name, std::string(WE_IN_TEXCOORD));
+    EXPECT_EQ(attrs[1].type, VertexType::FLOAT2);
+}
+
 TEST(SceneSchema, ParserAppliesPuppetMaterialInfoBeforeLoadingSlotMaterials) {
     auto files = std::map<std::string, std::string> {};
     AddPuppetImageSceneFiles(files);
@@ -1732,7 +2292,13 @@ TEST(SceneSchema, ParserKeepsLegacyEmptyPuppetMeshSingleMaterialSlotFallback) {
     auto node = FindRootChildByName(*parsed, "puppet image");
     ASSERT_NE(node, nullptr);
     ASSERT_NE(node->Mesh(), nullptr);
-    EXPECT_EQ(node->Mesh()->Submeshes().size(), 1u);
+    const auto& mesh = *node->Mesh();
+    ASSERT_EQ(mesh.Submeshes().size(), 1u);
+    EXPECT_EQ(mesh.Submeshes()[0].material_slot, 0u);
+    ASSERT_EQ(mesh.Submeshes()[0].VertexCount(), 1u);
+    EXPECT_EQ(mesh.Submeshes()[0].GetVertexArray(0).VertexCount(), 3u);
+    ASSERT_EQ(mesh.Submeshes()[0].IndexCount(), 1u);
+    EXPECT_EQ(mesh.Submeshes()[0].GetIndexArray(0).DataCount(), 2u);
     ASSERT_EQ(node->Mesh()->MaterialSlots().size(), 1u);
     ASSERT_NE(node->Mesh()->Material(), nullptr);
     EXPECT_EQ(node->Mesh()->Material()->name, "baseimage");

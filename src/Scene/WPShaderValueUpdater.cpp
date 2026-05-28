@@ -169,7 +169,7 @@ void WPShaderValueUpdater::UpdateUniforms(SceneNode* pNode, uint32_t material_sl
             }
         }
         if (nodeData->puppet_layer.hasPuppet() && info.has_BONES) {
-            auto data = nodeData->puppet_layer.genFrame(m_scene->frameTime);
+            auto data = nodeData->puppet_layer.genFrame(m_scene->elapsingTime);
             updateOp(G_BONES, std::span<const float> { data[0].data(), data.size() * 16 });
         }
     }

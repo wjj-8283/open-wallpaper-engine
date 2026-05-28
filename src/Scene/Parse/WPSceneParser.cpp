@@ -43,7 +43,6 @@
 #include <unordered_set>
 #include <random>
 #include <cmath>
-#include <functional>
 #include <optional>
 #include <regex>
 #include <variant>
@@ -64,6 +63,7 @@ struct ParseContext {
     const nlohmann::json*                                   object_list { nullptr };
     std::unordered_map<int32_t, std::shared_ptr<SceneNode>> layer_nodes;
     std::unordered_map<int32_t, int32_t>                    layer_parent_ids;
+    std::unordered_map<int32_t, std::shared_ptr<WPPuppet>>  layer_puppets;
     std::unordered_set<int32_t>                             attached_layer_nodes;
     std::vector<int32_t>                                    layer_node_order;
     std::vector<std::pair<std::string, std::string>>        pending_scene_scripts;
@@ -316,10 +316,6 @@ void AttachLayerNode(ParseContext& context, int32_t layer_id) {
     const int32_t parent_id =
         parent_id_iterator != context.layer_parent_ids.end() ? parent_id_iterator->second : -1;
 
-    if (context.layer_parent_ids.contains(parent_id)) {
-        AttachLayerNode(context, parent_id);
-    }
-
     if (auto parent_iterator = context.layer_nodes.find(parent_id);
         parent_iterator != context.layer_nodes.end() && parent_iterator->second != nullptr) {
         parent_iterator->second->AppendChild(node_iterator->second);
@@ -327,6 +323,47 @@ void AttachLayerNode(ParseContext& context, int32_t layer_id) {
         context.scene->sceneGraph->AppendChild(node_iterator->second);
     }
     context.attached_layer_nodes.insert(layer_id);
+}
+
+Eigen::Affine3f PuppetFileBindTransform(const WPPuppet& puppet, uint32_t bone_index) {
+    Eigen::Affine3f transform = Eigen::Affine3f::Identity();
+    if (bone_index >= puppet.bones.size()) return transform;
+
+    std::vector<uint32_t> chain;
+    while (bone_index != WPPuppet::Bone::NO_PARENT && bone_index < puppet.bones.size()) {
+        chain.push_back(bone_index);
+        bone_index = puppet.bones[bone_index].file_parent;
+    }
+    for (auto it = chain.rbegin(); it != chain.rend(); ++it) {
+        transform = transform * puppet.bones[*it].local_bind;
+    }
+    return transform;
+}
+
+std::optional<Eigen::Vector3f> ResolveLayerAttachmentOffset(const ParseContext& context,
+                                                            int32_t             parent_id,
+                                                            std::string_view attachment) {
+    if (attachment.empty()) return std::nullopt;
+
+    const auto puppet_iterator = context.layer_puppets.find(parent_id);
+    if (puppet_iterator == context.layer_puppets.end() || puppet_iterator->second == nullptr) {
+        return std::nullopt;
+    }
+
+    const auto& puppet = *puppet_iterator->second;
+    const auto attachment_iterator =
+        std::find_if(puppet.attachments.begin(), puppet.attachments.end(), [attachment](auto& item) {
+            return item.name == attachment;
+        });
+    if (attachment_iterator == puppet.attachments.end() ||
+        attachment_iterator->bone_index >= puppet.bones.size()) {
+        return std::nullopt;
+    }
+
+    const auto anchor =
+        PuppetFileBindTransform(puppet, attachment_iterator->bone_index) *
+        attachment_iterator->local_xform;
+    return anchor.translation();
 }
 
 void AttachRemainingLayerNodes(ParseContext& context) {
@@ -359,6 +396,12 @@ bool ParseLayerObject(const nlohmann::json& json, const nlohmann::json& objects,
 void ParseLayerNodes(ParseContext& context, const nlohmann::json& objects) {
     std::vector<RawLayerObject> layers;
     for (const auto& object : objects) {
+        int32_t object_id = 0;
+        GET_JSON_NAME_VALUE_NOWARN(object, "id", object_id);
+        if (object_id != 0) {
+            context.layer_node_order.push_back(object_id);
+        }
+
         RawLayerObject layer;
         if (ParseLayerObject(object, objects, layer)) {
             layers.push_back(std::move(layer));
@@ -424,7 +467,6 @@ void ParseLayerNodes(ParseContext& context, const nlohmann::json& objects) {
         }
         context.layer_nodes[layer.id]      = node;
         context.layer_parent_ids[layer.id] = layer.parent_id;
-        context.layer_node_order.push_back(layer.id);
     }
 }
 
@@ -1377,17 +1419,7 @@ void ParseTextObj(ParseContext& context, wpscene::WPTextObject& obj) {
     }
 
     context.layer_nodes[obj.id] = node;
-    if (context.attached_layer_nodes.contains(obj.id)) return;
-    if (context.layer_parent_ids.contains(obj.parent_id)) {
-        AttachLayerNode(context, obj.parent_id);
-    }
-    if (auto parent_iterator = context.layer_nodes.find(obj.parent_id);
-        parent_iterator != context.layer_nodes.end() && parent_iterator->second != nullptr) {
-        parent_iterator->second->AppendChild(node);
-    } else {
-        context.scene->sceneGraph->AppendChild(node);
-    }
-    context.attached_layer_nodes.insert(obj.id);
+    context.layer_parent_ids[obj.id] = obj.parent_id;
 }
 
 void SetNodeTransformFromMatrix(SceneNode& node, const Matrix4d& transform) {
@@ -1563,52 +1595,166 @@ bool PuppetHasMeshData(const WPMdl& puppet) {
     return ! puppet.vertexs.empty();
 }
 
+bool PuppetHasClipMasks(const WPMdl& puppet) {
+    for (const auto& mesh : puppet.meshes) {
+        if (! mesh.masks.empty()) return true;
+    }
+    return false;
+}
+
+constexpr std::string_view kPuppetMaskRenderTarget = "_rt_puppet_mask";
+
+void GenPuppetMeshSubmeshes(SceneMesh& mesh, const WPMdl& puppet, const bool include_masks) {
+    WPMdlParser::GenPuppetMesh(mesh, puppet, include_masks);
+}
+
+void EnsurePuppetMaskRenderTarget(Scene& scene) {
+    if (scene.renderTargets.count(std::string(kPuppetMaskRenderTarget)) != 0) return;
+
+    scene.renderTargets[std::string(kPuppetMaskRenderTarget)] = SceneRenderTarget {
+        .width      = 2,
+        .height     = 2,
+        .allowReuse = true,
+        .forceClear = true,
+        .bind       = { .enable = true, .screen = true, .scale = 0.5 },
+    };
+}
+
+std::string PuppetBaseTexture(const wpscene::WPImageObject& wpimgobj) {
+    if (! wpimgobj.material.textures.empty()) return wpimgobj.material.textures[0];
+    return {};
+}
+
+LoadedMaterialSlot MakePuppetMaterialSlot(const wpscene::WPMaterial& source,
+                                          const WPShaderInfo& shader_info,
+                                          const WPShaderValueData& shader_value_data) {
+    return LoadedMaterialSlot {
+        .material          = {},
+        .source            = source,
+        .shader_info       = shader_info,
+        .shader_value_data = shader_value_data,
+    };
+}
+
+bool LoadPuppetMaterialSlot(ParseContext& context, SceneNode* node,
+                            LoadedMaterialSlot& slot) {
+    if (! LoadMaterial(*context.vfs,
+                       slot.source,
+                       context.scene.get(),
+                       node,
+                       &slot.material,
+                       &slot.shader_value_data,
+                       &slot.shader_info)) {
+        return false;
+    }
+    LoadConstvalue(slot.material, slot.source, slot.shader_info);
+    return true;
+}
+
 std::optional<std::vector<LoadedMaterialSlot>>
 TryLoadPuppetMaterialSlots(ParseContext& context, SceneNode* node, wpscene::WPImageObject& wpimgobj,
                            const WPMdl& puppet, const ShaderValueMap& base_const_svs,
                            const WPShaderValueData& image_shader_value_data) {
     if (puppet.meshes.empty()) return std::nullopt;
     const bool has_bones = PuppetHasBones(puppet);
+    if (PuppetHasClipMasks(puppet)) EnsurePuppetMaskRenderTarget(*context.scene);
 
     std::vector<LoadedMaterialSlot> slots;
-    slots.reserve(puppet.meshes.size());
+    std::size_t slot_count = puppet.meshes.size();
+    for (const auto& mesh : puppet.meshes) slot_count += mesh.masks.size() * 2;
+    slots.reserve(slot_count);
+    std::vector<std::optional<wpscene::WPMaterial>> mesh_sources;
+    mesh_sources.reserve(puppet.meshes.size());
+
+    auto make_shader_info = [&base_const_svs, &puppet, has_bones]() {
+        WPShaderInfo shader_info;
+        if (has_bones) WPMdlParser::AddPuppetShaderInfo(shader_info, puppet);
+        shader_info.baseConstSvs = base_const_svs;
+        return shader_info;
+    };
+
+    auto make_shader_value_data = [&wpimgobj, &puppet, &image_shader_value_data, has_bones]() {
+        auto shader_value_data = image_shader_value_data;
+        shader_value_data.renderTargets.clear();
+        if (has_bones) {
+            shader_value_data.puppet_layer = WPPuppetLayer(puppet.puppet);
+            shader_value_data.puppet_layer.prepared(wpimgobj.puppet_layers);
+        }
+        return shader_value_data;
+    };
+
+    auto load_slot = [&](LoadedMaterialSlot slot, const std::string& material_path) {
+        if (! LoadPuppetMaterialSlot(context, node, slot)) {
+            LOG_ERROR("load puppet mesh material '%s' failed", material_path.c_str());
+            return false;
+        }
+        slots.push_back(std::move(slot));
+        return true;
+    };
 
     for (std::size_t slot_index = 0; slot_index < puppet.meshes.size(); ++slot_index) {
         const auto& mesh = puppet.meshes[slot_index];
+        if (mesh.positions.empty()) {
+            mesh_sources.push_back(std::nullopt);
+            continue;
+        }
         if (mesh.mat_json_file.empty()) {
             LOG_ERROR("puppet mesh %zu has no material json file", slot_index);
             return std::nullopt;
         }
 
-        LoadedMaterialSlot slot;
-        if (! LoadWPMaterialFromPath(*context.vfs, mesh.mat_json_file, slot.source)) {
+        wpscene::WPMaterial source;
+        if (! LoadWPMaterialFromPath(*context.vfs, mesh.mat_json_file, source)) {
             LOG_ERROR("load puppet mesh material '%s' failed", mesh.mat_json_file.c_str());
             return std::nullopt;
         }
         if (has_bones) {
-            WPMdlParser::AddPuppetMatInfo(slot.source, puppet);
-            WPMdlParser::AddPuppetShaderInfo(slot.shader_info, puppet);
+            WPMdlParser::AddPuppetMatInfo(source, puppet);
         }
-        slot.shader_info.baseConstSvs = base_const_svs;
-        slot.shader_value_data        = image_shader_value_data;
-        slot.shader_value_data.renderTargets.clear();
-        if (has_bones) {
-            slot.shader_value_data.puppet_layer = WPPuppetLayer(puppet.puppet);
-            slot.shader_value_data.puppet_layer.prepared(wpimgobj.puppet_layers);
+        mesh_sources.push_back(std::move(source));
+    }
+
+    for (std::size_t mesh_index = 0; mesh_index < puppet.meshes.size(); ++mesh_index) {
+        const auto& mesh        = puppet.meshes[mesh_index];
+        auto&       mesh_source = mesh_sources[mesh_index];
+        if (mesh.positions.empty() || ! mesh_source) continue;
+
+        auto base_slot = MakePuppetMaterialSlot(
+            *mesh_source, make_shader_info(), make_shader_value_data());
+        if (! load_slot(std::move(base_slot), mesh.mat_json_file)) {
+            return std::nullopt;
         }
 
-        if (! LoadMaterial(*context.vfs,
-                           slot.source,
-                           context.scene.get(),
-                           node,
-                           &slot.material,
-                           &slot.shader_value_data,
-                           &slot.shader_info)) {
-            LOG_ERROR("load puppet mesh material '%s' failed", mesh.mat_json_file.c_str());
-            return std::nullopt;
+        const auto  base_texture = mesh_source->textures.empty()
+            ? PuppetBaseTexture(wpimgobj)
+            : mesh_source->textures[0];
+        for (const auto& mask : mesh.masks) {
+            wpscene::WPMaterial mask_source;
+            mask_source.shader     = "clippingmaskimage4";
+            mask_source.blending   = "translucent";
+            mask_source.depthtest  = "disabled";
+            mask_source.depthwrite = "disabled";
+            mask_source.cullmode   = "nocull";
+            mask_source.textures.resize(2);
+            mask_source.textures[0] = base_texture;
+            mask_source.textures[1] = mask.mat_json_file;
+            if (has_bones) WPMdlParser::AddPuppetMatInfo(mask_source, puppet);
+
+            auto mask_slot = MakePuppetMaterialSlot(
+                mask_source, make_shader_info(), make_shader_value_data());
+            if (! load_slot(std::move(mask_slot), mask.mat_json_file)) return std::nullopt;
+
+            auto clipped_source = *mesh_source;
+            clipped_source.combos["CLIPPINGTARGET"] = 1;
+            clipped_source.combos["CLIPPINGUVS"]    = 1;
+            if (clipped_source.textures.size() < 9) clipped_source.textures.resize(9);
+            clipped_source.textures[8] = "_rt_puppet_mask";
+            if (has_bones) WPMdlParser::AddPuppetMatInfo(clipped_source, puppet);
+
+            auto clipped_slot = MakePuppetMaterialSlot(
+                clipped_source, make_shader_info(), make_shader_value_data());
+            if (! load_slot(std::move(clipped_slot), mesh.mat_json_file)) return std::nullopt;
         }
-        LoadConstvalue(slot.material, slot.source, slot.shader_info);
-        slots.push_back(std::move(slot));
     }
 
     return slots;
@@ -1943,14 +2089,16 @@ void ParseImageObj(ParseContext& context, wpscene::WPImageObject& img_obj) {
     if (! wpimgobj.puppet.empty()) {
         puppet = std::make_unique<WPMdl>();
         if (! WPMdlParser::Parse(wpimgobj.puppet, vfs, *puppet)) {
-            LOG_INFO("parse puppet failed: %s", wpimgobj.puppet.c_str());
+            LOG_ERROR("parse puppet failed: %s", wpimgobj.puppet.c_str());
             puppet = nullptr;
         } else {
             has_puppet_bones = PuppetHasBones(*puppet);
             has_puppet_mesh  = PuppetHasMeshData(*puppet);
             if (! has_puppet_bones && ! has_puppet_mesh) {
-                LOG_INFO("puppet has no mesh data: %s", wpimgobj.puppet.c_str());
+                LOG_ERROR("puppet has no mesh data: %s", wpimgobj.puppet.c_str());
                 puppet = nullptr;
+            } else if (puppet->puppet != nullptr) {
+                context.layer_puppets[wpimgobj.id] = puppet->puppet;
             }
         }
     }
@@ -1978,16 +2126,12 @@ void ParseImageObj(ParseContext& context, wpscene::WPImageObject& img_obj) {
         &context.layer_nodes,
         wpimgobj.id,
         &context.pending_scene_scripts);
-    auto appendImageNode = [&context, &wpimgobj, &spImgNode]() {
-        if (context.layer_parent_ids.contains(wpimgobj.parent_id)) {
-            AttachLayerNode(context, wpimgobj.parent_id);
+    auto registerImageNode = [&context, &wpimgobj, &spImgNode]() {
+        if (const auto offset =
+                ResolveLayerAttachmentOffset(context, wpimgobj.parent_id, wpimgobj.attachment)) {
+            spImgNode->SetTranslate(spImgNode->Translate() + *offset);
         }
-        if (auto parent_iterator = context.layer_nodes.find(wpimgobj.parent_id);
-            parent_iterator != context.layer_nodes.end()) {
-            parent_iterator->second->AppendChild(spImgNode);
-        } else {
-            context.scene->sceneGraph->AppendChild(spImgNode);
-        }
+        context.layer_parent_ids[wpimgobj.id] = wpimgobj.parent_id;
     };
     const auto registerImageAlphaAnimation = [&context, &wpimgobj](SceneMaterial* material) {
         if (context.scene->runtime == nullptr || material == nullptr || ! wpimgobj.dynamic_alpha)
@@ -2052,13 +2196,13 @@ void ParseImageObj(ParseContext& context, wpscene::WPImageObject& img_obj) {
 
     const bool skipComposeRender = isCompose && ! hasEffect;
     if (skipComposeRender) {
-        appendImageNode();
+        registerImageNode();
         runtime_node_registration.Commit();
         return;
     }
 
     if (wpimgobj.config.passthrough && ! hasEffect && ! isCompose) {
-        appendImageNode();
+        registerImageNode();
         runtime_node_registration.Commit();
         return;
     }
@@ -2119,7 +2263,7 @@ void ParseImageObj(ParseContext& context, wpscene::WPImageObject& img_obj) {
             if (hasEffect) {
                 GenCardMesh(
                     mesh, { (uint16_t)wpimgobj.size[0], (uint16_t)wpimgobj.size[1] }, mapRate);
-                WPMdlParser::GenPuppetMesh(effct_final_mesh, *puppet);
+                GenPuppetMeshSubmeshes(effct_final_mesh, *puppet, false);
 
                 if (has_puppet_bones) {
                     wpscene::WPImageEffect puppet_effect;
@@ -2135,7 +2279,7 @@ void ParseImageObj(ParseContext& context, wpscene::WPImageObject& img_obj) {
                     svData.puppet_layer = WPPuppetLayer(puppet->puppet);
                     svData.puppet_layer.prepared(wpimgobj.puppet_layers);
                 }
-                WPMdlParser::GenPuppetMesh(mesh, *puppet);
+                GenPuppetMeshSubmeshes(mesh, *puppet, true);
                 puppet_material_slots = TryLoadPuppetMaterialSlots(
                     context, spImgNode.get(), wpimgobj, *puppet, baseConstSvs, svData);
             }
@@ -2437,7 +2581,7 @@ void ParseImageObj(ParseContext& context, wpscene::WPImageObject& img_obj) {
             }
         }
     }
-    appendImageNode();
+    registerImageNode();
     runtime_node_registration.Commit();
     if (context.scene->runtime != nullptr) {
         context.scene->runtime->RegisterLayerTemplate(
@@ -2447,14 +2591,6 @@ void ParseImageObj(ParseContext& context, wpscene::WPImageObject& img_obj) {
                             static_cast<float>(wpimgobj.size[1])));
     }
 
-    if (hasEffect && ! spImgNode->Camera().empty()) {
-        auto camera_iterator = context.scene->cameras.find(spImgNode->Camera());
-        if (camera_iterator != context.scene->cameras.end() && camera_iterator->second != nullptr &&
-            camera_iterator->second->HasImgEffect()) {
-            auto& final_node = camera_iterator->second->GetImgEffect()->FinalNode();
-            CopyResolvedWorldTransform(final_node, *spImgNode);
-        }
-    }
 }
 
 struct ParticleChildPtr {
@@ -2825,11 +2961,8 @@ void ParseParticleObj(ParseContext& context, wpscene::WPParticleObject& wppartob
 
     if (is_child)
         child_ptr.node_parent->AppendChild(spNode);
-    else if (auto parent_iterator = context.layer_nodes.find(wppartobj.parent_id);
-             parent_iterator != context.layer_nodes.end())
-        parent_iterator->second->AppendChild(spNode);
     else
-        context.scene->sceneGraph->AppendChild(spNode);
+        context.layer_parent_ids[wppartobj.id] = wppartobj.parent_id;
     runtime_node_registration.Commit();
 }
 
@@ -2845,6 +2978,20 @@ void ParseLightObj(ParseContext& context, wpscene::WPLightObject& light_obj) {
     light.setNode(node);
 
     context.scene->sceneGraph->AppendChild(node);
+}
+
+void SyncImageEffectFinalTransforms(ParseContext& context) {
+    for (const auto& [layer_id, node] : context.layer_nodes) {
+        (void)layer_id;
+        if (node == nullptr || node->Camera().empty()) continue;
+        auto camera_iterator = context.scene->cameras.find(node->Camera());
+        if (camera_iterator == context.scene->cameras.end() || camera_iterator->second == nullptr ||
+            ! camera_iterator->second->HasImgEffect()) {
+            continue;
+        }
+        auto& final_node = camera_iterator->second->GetImgEffect()->FinalNode();
+        CopyResolvedWorldTransform(final_node, *node);
+    }
 }
 
 template<typename T>
@@ -3124,6 +3271,7 @@ std::shared_ptr<Scene> WPSceneParser::Parse(const SceneParseRequest& request,
     }
 
     AttachRemainingLayerNodes(context);
+    SyncImageEffectFinalTransforms(context);
 
     if (context.scene->runtime != nullptr) {
         for (const auto& [layer_name, script_source] : context.pending_scene_scripts) {

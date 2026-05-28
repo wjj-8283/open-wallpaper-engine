@@ -10,10 +10,14 @@
 #include <algorithm>
 #include <cassert>
 #include <cmath>
+#include <cstdint>
+#include <cstdio>
 #include <memory>
 #include <map>
+#include <span>
 #include <string>
 #include <vector>
+#include <array>
 
 #include "Audio/SoundManager.h"
 #include "Fs/Fs.h"
@@ -58,6 +62,140 @@ public:
 private:
     std::map<std::string, std::string> m_files;
 };
+
+class Bytes {
+public:
+    void Stamp(std::string_view prefix, int version) {
+        char stamp[9] {};
+        std::snprintf(stamp, sizeof(stamp), "%.4s%.4d", prefix.data(), version);
+        Raw(std::span<const uint8_t>(reinterpret_cast<const uint8_t*>(stamp), sizeof(stamp)));
+    }
+    void Str(std::string_view value) {
+        Raw(std::span<const uint8_t>(reinterpret_cast<const uint8_t*>(value.data()), value.size()));
+        U8(0);
+    }
+    void U8(uint8_t value) { RawValue(value); }
+    void U16(uint16_t value) { RawValue(value); }
+    void U32(uint32_t value) { RawValue(value); }
+    void F32(float value) { RawValue(value); }
+    void Raw(std::span<const uint8_t> bytes) {
+        m_bytes.insert(m_bytes.end(), bytes.begin(), bytes.end());
+    }
+    std::string TakeString() {
+        return std::string(reinterpret_cast<const char*>(m_bytes.data()), m_bytes.size());
+    }
+
+private:
+    template<typename T>
+    void RawValue(const T& value) {
+        Raw(std::span<const uint8_t>(reinterpret_cast<const uint8_t*>(&value), sizeof(value)));
+    }
+
+    std::vector<uint8_t> m_bytes;
+};
+
+constexpr uint32_t kSkinUvFlag = 0x00800000u | 0x01000000u | 0x00000008u;
+
+void WritePuppetVertex(Bytes& b, float x, float y, float u) {
+    b.F32(x);
+    b.F32(y);
+    b.F32(0.0f);
+    b.U32(0);
+    b.U32(0);
+    b.U32(0);
+    b.U32(0);
+    b.F32(1.0f);
+    b.F32(0.0f);
+    b.F32(0.0f);
+    b.F32(0.0f);
+    b.F32(u);
+    b.F32(0.5f);
+}
+
+void WritePuppetMesh(Bytes& b, std::string_view material, uint32_t part_id) {
+    b.Str(material);
+    b.U32(0);
+    b.F32(-1.0f);
+    b.F32(-1.0f);
+    b.F32(0.0f);
+    b.F32(1.0f);
+    b.F32(1.0f);
+    b.F32(0.0f);
+    b.U32(kSkinUvFlag);
+    b.U32(3u * 52u);
+    WritePuppetVertex(b, 0.0f, 0.0f, 0.0f);
+    WritePuppetVertex(b, 1.0f, 0.0f, 0.5f);
+    WritePuppetVertex(b, 0.0f, 1.0f, 1.0f);
+    b.U32(6);
+    b.U16(0);
+    b.U16(1);
+    b.U16(2);
+    b.U8(1);
+    b.U8(1);
+    b.U16(0);
+    b.U8(0);
+    b.U32(36);
+    for (uint32_t i = 0; i < 3; ++i) {
+        b.F32(0.25f * static_cast<float>(i));
+        b.F32(0.5f);
+        b.U32(0);
+    }
+    b.U8(1);
+    b.U32(16);
+    b.U32(part_id);
+    b.U32(0);
+    b.U32(0);
+    b.U32(3);
+}
+
+std::string BuildMaskedPuppetMdlFixture() {
+    Bytes b;
+    b.Stamp("MDL", 23);
+    b.U32(kSkinUvFlag);
+    b.U32(1);
+    b.U32(1);
+    WritePuppetMesh(b, "mat/head.json", 10);
+    b.U32(1);
+    b.U32(7);
+    b.U32(0);
+    b.Str("masks/iris_mask");
+    b.U32(0);
+    b.U32(1);
+    b.U32(0);
+    b.U32(1);
+    b.U32(0);
+    return b.TakeString();
+}
+
+std::string PuppetMaterialJson(std::string_view                        shader,
+                               std::initializer_list<std::string_view> textures) {
+    std::string texture_json;
+    for (const auto texture : textures) {
+        if (! texture_json.empty()) texture_json += ",";
+        texture_json += "\"" + std::string(texture) + "\"";
+    }
+    return std::string(R"({"passes":[{"blending":"translucent","cullmode":"nocull",)"
+                       R"("depthtest":"disabled","depthwrite":"disabled","shader":")") +
+           std::string(shader) + R"(","textures":[)" + texture_json + R"(]}]})";
+}
+
+std::string BasicSceneJson(std::string_view image) {
+    return std::string(R"({
+      "camera": {"center":[0,0,0], "eye":[0,0,1], "up":[0,1,0]},
+      "general": {
+        "ambientcolor":[0.2,0.2,0.2], "skylightcolor":[0.3,0.3,0.3],
+        "clearcolor":[0,0,0], "cameraparallax":false,
+        "cameraparallaxamount":0, "cameraparallaxdelay":0,
+        "cameraparallaxmouseinfluence":0,
+        "orthogonalprojection":{"width":640,"height":360}
+      },
+      "objects": [
+        {"id":300,"name":"masked puppet image","image":")") +
+           std::string(image) +
+           R"(","origin":[0,0,0],"scale":[1,1,1],"angles":[0,0,0],"visible":true}
+      ]
+    })";
+}
 
 struct GraphPassView {
     std::string             name;
@@ -317,6 +455,223 @@ void submeshMaterialRoutingDoesNotRequireSlotZero() {
     assert(slot_one_pass->desc().material_slot == 1);
 }
 
+void submeshOutputOverrideRoutesOnlyThatPass() {
+    Scene scene;
+    installDefaultTargets(scene);
+    scene.renderTargets["_rt_puppet_mask"] = SceneRenderTarget {
+        .width      = 64,
+        .height     = 64,
+        .allowReuse = true,
+    };
+    scene.renderTargets["_rt_puppet_layer"] = SceneRenderTarget {
+        .width      = 64,
+        .height     = 64,
+        .allowReuse = true,
+    };
+
+    auto node = std::make_shared<SceneNode>();
+    node->SetName("masked_puppet");
+
+    auto mesh = std::make_shared<SceneMesh>();
+    SceneMaterial mask {};
+    mask.name = "mask_pass";
+    SceneMaterial clipped {};
+    clipped.name = "clipped_pass";
+    clipped.textures.resize(9);
+    clipped.textures[8] = "_rt_puppet_mask";
+    mesh->AddMaterial(std::move(mask));
+    mesh->AddMaterial(std::move(clipped));
+    mesh->Submeshes().emplace_back();
+    mesh->Submeshes().emplace_back();
+    mesh->Submeshes()[0].material_slot = 0;
+    mesh->Submeshes()[0].output_override = "_rt_puppet_mask";
+    mesh->Submeshes()[1].material_slot = 1;
+
+    node->AddMesh(mesh);
+    scene.sceneGraph->AppendChild(node);
+
+    auto camera = std::make_shared<SceneCamera>(64, 64, 0.01f, 100.0f);
+    camera->AttatchImgEffect(std::make_shared<SceneImageEffectLayer>(
+        node.get(),
+        64.0f,
+        64.0f,
+        "_rt_puppet_layer",
+        "_rt_unused"));
+    node->SetCamera("mask_camera");
+    scene.cameras["mask_camera"] = camera;
+
+    const auto graph  = wallpaper::sceneToRenderGraph(scene);
+    const auto passes = graphPasses(*graph);
+
+    const auto* mask_pass = findCustomPass(passes, "mask_pass");
+    const auto* clipped_pass = findCustomPass(passes, "clipped_pass");
+    assert(mask_pass->desc().output == "_rt_puppet_mask");
+    assert(clipped_pass->desc().output == "_rt_puppet_layer");
+    assert(clipped_pass->desc().textures.size() == 9);
+    assert(clipped_pass->desc().textures[8] == "_rt_puppet_mask");
+}
+
+void generatedPuppetMaskSubmeshesRoutePrepassAndMainClip() {
+    Scene scene;
+    installDefaultTargets(scene);
+    scene.renderTargets["_rt_puppet_mask"] = SceneRenderTarget {
+        .width      = 64,
+        .height     = 64,
+        .allowReuse = true,
+        .forceClear = true,
+    };
+
+    auto node = std::make_shared<SceneNode>();
+    node->SetName("generated_masked_puppet");
+
+    auto mesh = std::make_shared<SceneMesh>();
+    SceneMaterial base {};
+    base.name = "base_unclipped";
+    SceneMaterial prepass {};
+    prepass.name = "generated_mask_prepass";
+    SceneMaterial clipped {};
+    clipped.name = "generated_clipped_main";
+    clipped.textures.resize(9);
+    clipped.textures[8] = "_rt_puppet_mask";
+    mesh->AddMaterial(std::move(base));
+    mesh->AddMaterial(std::move(prepass));
+    mesh->AddMaterial(std::move(clipped));
+
+    mesh->Submeshes().resize(3);
+    mesh->Submeshes()[0].material_slot = 0;
+    mesh->Submeshes()[1].material_slot = 1;
+    mesh->Submeshes()[1].output_override = "_rt_puppet_mask";
+    mesh->Submeshes()[1].SetDrawRanges(std::array<SceneMesh::DrawRange, 1> {
+        SceneMesh::DrawRange { .indexOffset = 0, .indexCount = 3 },
+    });
+    mesh->Submeshes()[2].material_slot = 2;
+    mesh->Submeshes()[2].SetDrawRanges(std::array<SceneMesh::DrawRange, 1> {
+        SceneMesh::DrawRange { .indexOffset = 3, .indexCount = 3 },
+    });
+
+    node->AddMesh(mesh);
+    scene.sceneGraph->AppendChild(node);
+
+    const auto graph  = wallpaper::sceneToRenderGraph(scene);
+    const auto passes = graphPasses(*graph);
+
+    const auto* prepass_pass = findCustomPass(passes, "generated_mask_prepass");
+    const auto* clipped_pass = findCustomPass(passes, "generated_clipped_main");
+    assert(prepass_pass->desc().output == "_rt_puppet_mask");
+    assert(prepass_pass->desc().submesh_index == 1);
+    assert(prepass_pass->desc().material_slot == 1);
+    assert(clipped_pass->desc().output == SpecTex_Default);
+    assert(clipped_pass->desc().submesh_index == 2);
+    assert(clipped_pass->desc().material_slot == 2);
+    assert(clipped_pass->desc().textures.size() == 9);
+    assert(clipped_pass->desc().textures[8] == "_rt_puppet_mask");
+    assert(clipped_pass->desc().preserve_target_contents);
+}
+
+void parsedMaskedPuppetMaterialSlotsReachRenderGraph() {
+    wallpaper::fs::VFS vfs;
+    auto files = std::map<std::string, std::string> {
+        { "/puppet_image.json",
+          R"({"width":64,"height":32,"material":"mat/base.json","puppet":"puppet.mdl"})" },
+        { "/puppet.mdl", BuildMaskedPuppetMdlFixture() },
+        { "/mat/base.json", PuppetMaterialJson("baseimage", { "base.tex" }) },
+        { "/mat/head.json", PuppetMaterialJson("puppetmain", { "head.tex" }) },
+        { "/shaders/baseimage.vert",
+          R"(attribute vec3 a_Position;
+attribute vec2 a_TexCoord;
+varying vec2 v_TexCoord;
+void main() {
+  gl_Position = vec4(a_Position, 1.0);
+  v_TexCoord = a_TexCoord;
+}
+)" },
+        { "/shaders/baseimage.frag",
+          R"(uniform sampler2D g_Texture0;
+varying vec2 v_TexCoord;
+void main() {
+  gl_FragColor = texture(g_Texture0, v_TexCoord);
+}
+)" },
+        { "/shaders/puppetmain.vert",
+          R"(attribute vec3 a_Position;
+attribute vec2 a_TexCoord;
+#if SKINNING
+attribute uvec4 a_BlendIndices;
+attribute vec4 a_BlendWeights;
+uniform mat4x3 g_Bones[BONECOUNT];
+#endif
+varying vec2 v_TexCoord;
+void main() {
+  gl_Position = vec4(a_Position, 1.0);
+  v_TexCoord = a_TexCoord;
+}
+)" },
+        { "/shaders/puppetmain.frag",
+          R"(uniform sampler2D g_Texture0;
+#if CLIPPINGTARGET
+uniform sampler2D g_Texture8;
+#endif
+varying vec2 v_TexCoord;
+void main() {
+  vec4 color = texture(g_Texture0, v_TexCoord);
+#if CLIPPINGTARGET
+  color *= texture(g_Texture8, v_TexCoord);
+#endif
+  gl_FragColor = color;
+}
+)" },
+        { "/shaders/clippingmaskimage4.vert",
+          R"(attribute vec3 a_Position;
+attribute vec2 a_TexCoord;
+varying vec2 v_TexCoord;
+void main() {
+  gl_Position = vec4(a_Position, 1.0);
+  v_TexCoord = a_TexCoord;
+}
+)" },
+        { "/shaders/clippingmaskimage4.frag",
+          R"(uniform sampler2D g_Texture0;
+uniform sampler2D g_Texture1;
+varying vec2 v_TexCoord;
+void main() {
+  gl_FragColor = texture(g_Texture0, v_TexCoord) * texture(g_Texture1, v_TexCoord);
+}
+)" },
+        { "/materials/base.tex.tex", "" },
+        { "/materials/head.tex.tex", "" },
+        { "/materials/masks/iris_mask.tex", "" },
+    };
+    assert(vfs.Mount("/assets", std::make_unique<MemoryFs>(std::move(files))));
+
+    wallpaper::audio::SoundManager sound_manager;
+    wallpaper::WPSceneParser       parser;
+    auto parsed = parser.Parse(
+        "parsed-masked-puppet", BasicSceneJson("puppet_image.json"), vfs, sound_manager);
+    assert(parsed != nullptr);
+
+    const auto graph  = wallpaper::sceneToRenderGraph(*parsed);
+    const auto passes = graphPasses(*graph);
+
+    const auto* base_pass = findCustomPass(passes, "puppetmain");
+    const auto* prepass_pass = findCustomPass(passes, "clippingmaskimage4");
+    const auto clipped_it = std::find_if(passes.begin(), passes.end(), [](const auto& pass) {
+        return pass.custom != nullptr && pass.name == "puppetmain" &&
+            pass.custom->desc().material_slot == 2;
+    });
+    assert(clipped_it != passes.end());
+    const auto* clipped_pass = clipped_it->custom;
+
+    assert(base_pass->desc().submesh_index == 0);
+    assert(base_pass->desc().material_slot == 0);
+    assert(prepass_pass->desc().submesh_index == 1);
+    assert(prepass_pass->desc().material_slot == 1);
+    assert(prepass_pass->desc().output == "_rt_puppet_mask");
+    assert(clipped_pass->desc().submesh_index == 2);
+    assert(clipped_pass->desc().material_slot == 2);
+    assert(clipped_pass->desc().textures.size() == 9);
+    assert(clipped_pass->desc().textures[8] == "_rt_puppet_mask");
+}
+
 void skippedBasePassStillEmitsEffectPasses() {
     Scene scene;
     installDefaultTargets(scene);
@@ -400,6 +755,130 @@ void composeBaseRunsBeforeChildrenAndEffectsAfterChildren() {
 
     assert(base_index < child_index);
     assert(child_index < effect_index);
+}
+
+void parsedContainerDeclarationOrderControlsRenderPassOrder() {
+    wallpaper::fs::VFS vfs;
+    auto files = std::map<std::string, std::string> {
+        { "/image.json", R"({"width":64,"height":32,"material":"mat.json"})" },
+        { "/mat.json",
+          R"({"passes":[{"blending":"translucent","cullmode":"nocull","depthtest":"disabled","depthwrite":"disabled","shader":"genericimage","textures":["a.tex"]}]})" },
+        { "/shaders/genericimage.vert",
+          R"(attribute vec3 a_Position;
+attribute vec2 a_TexCoord;
+varying vec2 v_TexCoord;
+void main() {
+  gl_Position = vec4(a_Position, 1.0);
+  v_TexCoord = a_TexCoord;
+}
+)" },
+        { "/shaders/genericimage.frag",
+          R"(uniform sampler2D g_Texture0;
+varying vec2 v_TexCoord;
+void main() {
+  gl_FragColor = texture(g_Texture0, v_TexCoord);
+}
+)" },
+        { "/materials/a.tex.tex", "" },
+    };
+    assert(vfs.Mount("/assets", std::make_unique<MemoryFs>(std::move(files))));
+
+    wallpaper::audio::SoundManager sound_manager;
+    wallpaper::WPSceneParser       parser;
+    const std::string              scene_json = R"({
+      "camera": {"center":[0,0,0], "eye":[0,0,1], "up":[0,1,0]},
+      "general": {
+        "ambientcolor":[0.2,0.2,0.2], "skylightcolor":[0.3,0.3,0.3],
+        "clearcolor":[0,0,0], "cameraparallax":false,
+        "cameraparallaxamount":0, "cameraparallaxdelay":0,
+        "cameraparallaxmouseinfluence":0,
+        "orthogonalprojection":{"width":640,"height":360}
+      },
+      "objects": [
+        {"id":200,"name":"early container","origin":[10,0,0],"visible":true},
+        {"id":201,"name":"middle sibling","image":"image.json",
+         "origin":[20,0,0],"scale":[1,1,1],"angles":[0,0,0],"visible":true},
+        {"id":202,"parent":200,"name":"late child","image":"image.json",
+         "origin":[5,0,0],"scale":[1,1,1],"angles":[0,0,0],"visible":true}
+      ]
+    })";
+
+    auto parsed = parser.Parse("rendergraph-declaration-order", scene_json, vfs, sound_manager);
+    assert(parsed != nullptr);
+    installDefaultTargets(*parsed);
+
+    const auto graph  = wallpaper::sceneToRenderGraph(*parsed);
+    const auto passes = graphPasses(*graph);
+
+    const auto* child_view = findCustomPassViewByNodeName(passes, "late child");
+    const auto* sibling_view = findCustomPassViewByNodeName(passes, "middle sibling");
+    const auto child_index =
+        static_cast<size_t>(std::distance(passes.data(), child_view));
+    const auto sibling_index =
+        static_cast<size_t>(std::distance(passes.data(), sibling_view));
+    assert(child_index < sibling_index);
+}
+
+void parsedForwardParentDeclarationOrderControlsRenderPassOrder() {
+    wallpaper::fs::VFS vfs;
+    auto files = std::map<std::string, std::string> {
+        { "/image.json", R"({"width":64,"height":32,"material":"mat.json"})" },
+        { "/mat.json",
+          R"({"passes":[{"blending":"translucent","cullmode":"nocull","depthtest":"disabled","depthwrite":"disabled","shader":"genericimage","textures":["a.tex"]}]})" },
+        { "/shaders/genericimage.vert",
+          R"(attribute vec3 a_Position;
+attribute vec2 a_TexCoord;
+varying vec2 v_TexCoord;
+void main() {
+  gl_Position = vec4(a_Position, 1.0);
+  v_TexCoord = a_TexCoord;
+}
+)" },
+        { "/shaders/genericimage.frag",
+          R"(uniform sampler2D g_Texture0;
+varying vec2 v_TexCoord;
+void main() {
+  gl_FragColor = texture(g_Texture0, v_TexCoord);
+}
+)" },
+        { "/materials/a.tex.tex", "" },
+    };
+    assert(vfs.Mount("/assets", std::make_unique<MemoryFs>(std::move(files))));
+
+    wallpaper::audio::SoundManager sound_manager;
+    wallpaper::WPSceneParser       parser;
+    const std::string              scene_json = R"({
+      "camera": {"center":[0,0,0], "eye":[0,0,1], "up":[0,1,0]},
+      "general": {
+        "ambientcolor":[0.2,0.2,0.2], "skylightcolor":[0.3,0.3,0.3],
+        "clearcolor":[0,0,0], "cameraparallax":false,
+        "cameraparallaxamount":0, "cameraparallaxdelay":0,
+        "cameraparallaxmouseinfluence":0,
+        "orthogonalprojection":{"width":640,"height":360}
+      },
+      "objects": [
+        {"id":302,"parent":300,"name":"early child","image":"image.json",
+         "origin":[5,0,0],"scale":[1,1,1],"angles":[0,0,0],"visible":true},
+        {"id":301,"name":"middle root","image":"image.json",
+         "origin":[20,0,0],"scale":[1,1,1],"angles":[0,0,0],"visible":true},
+        {"id":300,"name":"late parent","origin":[10,0,0],"visible":true}
+      ]
+    })";
+
+    auto parsed = parser.Parse("rendergraph-forward-parent-order", scene_json, vfs, sound_manager);
+    assert(parsed != nullptr);
+    installDefaultTargets(*parsed);
+
+    const auto graph  = wallpaper::sceneToRenderGraph(*parsed);
+    const auto passes = graphPasses(*graph);
+
+    const auto* child_view = findCustomPassViewByNodeName(passes, "early child");
+    const auto* root_view  = findCustomPassViewByNodeName(passes, "middle root");
+    const auto child_index =
+        static_cast<size_t>(std::distance(passes.data(), child_view));
+    const auto root_index =
+        static_cast<size_t>(std::distance(passes.data(), root_view));
+    assert(root_index < child_index);
 }
 
 void reusableNonDefaultTargetClearsOnlyOnFirstWriter() {
@@ -1363,8 +1842,13 @@ int main() {
     runtimeTextTextureNamesStayImported();
     submeshMaterialSlotsEmitDistinctCustomPasses();
     submeshMaterialRoutingDoesNotRequireSlotZero();
+    submeshOutputOverrideRoutesOnlyThatPass();
+    generatedPuppetMaskSubmeshesRoutePrepassAndMainClip();
+    parsedMaskedPuppetMaterialSlotsReachRenderGraph();
     skippedBasePassStillEmitsEffectPasses();
     composeBaseRunsBeforeChildrenAndEffectsAfterChildren();
+    parsedContainerDeclarationOrderControlsRenderPassOrder();
+    parsedForwardParentDeclarationOrderControlsRenderPassOrder();
     reusableNonDefaultTargetClearsOnlyOnFirstWriter();
     forceClearReusableTargetClearsEveryWriter();
     forceClearDoesNotChangeDefaultOutputPreservation();

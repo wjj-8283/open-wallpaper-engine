@@ -145,4 +145,13 @@ TEST(SceneMesh, SubmeshCarriesMaterialSlotIndex) {
 
     EXPECT_EQ(mesh.Submeshes()[0].material_slot, 3u);
 }
+
+TEST(SceneMesh, SubmeshCarriesOutputOverrideForMaskPasses) {
+    SceneMesh mesh;
+    mesh.Submeshes().emplace_back();
+
+    mesh.Submeshes()[0].output_override = "_rt_puppet_mask";
+
+    EXPECT_EQ(mesh.Submeshes()[0].output_override, "_rt_puppet_mask");
+}
 } // namespace

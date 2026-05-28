@@ -6,6 +6,7 @@
 #include <climits>
 #include <atomic>
 #include <span>
+#include <string>
 
 #include "SceneVertexArray.h"
 #include "SceneIndexArray.h"
@@ -45,6 +46,7 @@ public:
 		}
 
 		uint32_t material_slot {0};
+		std::string output_override;
 
 	private:
 		std::vector<SceneVertexArray> m_vertexArrays;
