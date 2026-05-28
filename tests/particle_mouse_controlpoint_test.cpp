@@ -2,11 +2,13 @@
 #include "Interface/IParticleRawGener.h"
 #include "Particle/ParticleModify.h"
 #include "Particle/ParticleSystem.h"
+#include "Particle/WPParticleRawGener.h"
 #include "Project/ProjectProperties.hpp"
 #include "Runtime/DynamicValue.hpp"
 #include "Runtime/SceneRuntimeContext.hpp"
 #include "Scene/Scene.h"
 #include "Scene/SceneNode.h"
+#include "SpecTexs.hpp"
 #include "WPParticleParser.hpp"
 #include "wpscene/WPParticleObject.h"
 
@@ -26,7 +28,9 @@ class CapturingParticleRawGener final : public IParticleRawGener {
 public:
     void GenGLData(std::span<const std::unique_ptr<ParticleInstance>> instances,
                    SceneMesh&,
-                   ParticleRawGenSpecOp&) override {
+                   ParticleRawGenSpecOp&,
+                   ParticleRenderScale render_scale) override {
+        last_render_scale = render_scale;
         particles.clear();
         for (const auto& instance : instances) {
             if (instance) {
@@ -37,6 +41,7 @@ public:
     }
 
     std::vector<Particle> particles;
+    ParticleRenderScale   last_render_scale;
 };
 
 std::unique_ptr<ParticleSubSystem> MakeTestSubsystem(ParticleSystem& system,
@@ -65,6 +70,48 @@ Particle FirstSpawnedParticle(ParticleEmittOp&                      emitter,
 
     EXPECT_FALSE(particles.empty());
     return particles.front();
+}
+
+std::shared_ptr<SceneMesh> MakeParticleMesh(std::size_t count) {
+    auto mesh = std::make_shared<SceneMesh>(true);
+    mesh->AddVertexArray(SceneVertexArray(
+        {
+            { WE_IN_POSITION.data(), VertexType::FLOAT3 },
+            { WE_IN_TEXCOORDVEC4.data(), VertexType::FLOAT4 },
+            { WE_IN_COLOR.data(), VertexType::FLOAT4 },
+            { WE_IN_TEXCOORDC2.data(), VertexType::FLOAT2 },
+        },
+        count * 4));
+    mesh->AddIndexArray(SceneIndexArray(count));
+    return mesh;
+}
+
+float FirstParticleRawRenderHalfSize(const SceneMesh& mesh) {
+    const auto& vertex_array = mesh.GetVertexArray(0);
+    const auto  offsets      = vertex_array.GetAttrOffsetMap();
+    const auto  texcoord     = offsets.find(WE_IN_TEXCOORDVEC4);
+    if (texcoord == offsets.end()) {
+        ADD_FAILURE() << "particle mesh is missing " << WE_IN_TEXCOORDVEC4;
+        return 0.0f;
+    }
+    const auto  offset =
+        static_cast<std::size_t>(texcoord->second.offset / sizeof(float));
+    return vertex_array.Data()[offset + 3];
+}
+
+void AddSingleSizedParticleEmitter(ParticleSubSystem& subsystem, float size) {
+    subsystem.AddEmitter([size](std::vector<Particle>& particles,
+                                std::vector<ParticleInitOp>&,
+                                uint32_t,
+                                double,
+                                std::span<const ParticleControlpoint>) {
+        if (! particles.empty()) return;
+
+        Particle particle;
+        ParticleModify::InitLifetime(particle, 10.0f);
+        ParticleModify::InitSize(particle, size);
+        particles.emplace_back(particle);
+    });
 }
 
 TEST(ParticleMouseControlpoint, EmitterControlpointOffsetsBoxSpawnOrigin) {
@@ -340,6 +387,142 @@ TEST(ParticleMouseControlpoint, MouseControlpointUsesOwnerNodeLocalSpace) {
     EXPECT_DOUBLE_EQ(controlpoints[0].offset.x(), 26.0);
     EXPECT_DOUBLE_EQ(controlpoints[0].offset.y(), 27.0);
     EXPECT_DOUBLE_EQ(controlpoints[0].offset.z(), 3.0);
+}
+
+TEST(ParticleMouseControlpoint, RawParticleSizeCompensatesOwnerScale) {
+    Scene scene;
+    scene.frameTime = 1.0;
+
+    auto owner = std::make_shared<SceneNode>();
+    owner->SetScale(Eigen::Vector3f(6.0f, 6.0f, 1.0f));
+
+    auto mesh = MakeParticleMesh(1);
+
+    ParticleSystem system(scene);
+    system.gener = std::make_unique<WPParticleRawGener>();
+
+    auto subsystem = MakeTestSubsystem(system, mesh);
+    subsystem->SetOwnerNode(owner);
+    subsystem->AddEmitter([](std::vector<Particle>& particles,
+                             std::vector<ParticleInitOp>&,
+                             uint32_t,
+                             double,
+                             std::span<const ParticleControlpoint>) {
+        if (! particles.empty()) return;
+
+        Particle particle;
+        ParticleModify::InitLifetime(particle, 10.0f);
+        ParticleModify::InitSize(particle, 48.0f);
+        particles.emplace_back(particle);
+    });
+
+    subsystem->Emitt();
+
+    EXPECT_FLOAT_EQ(FirstParticleRawRenderHalfSize(*mesh), 4.0f);
+}
+
+TEST(ParticleMouseControlpoint, RawParticleSizeUsesAbsoluteOwnerScale) {
+    Scene scene;
+    scene.frameTime = 1.0;
+
+    auto owner = std::make_shared<SceneNode>();
+    owner->SetScale(Eigen::Vector3f(-6.0f, -6.0f, 1.0f));
+
+    auto mesh = MakeParticleMesh(1);
+
+    ParticleSystem system(scene);
+    system.gener = std::make_unique<WPParticleRawGener>();
+
+    auto subsystem = MakeTestSubsystem(system, mesh);
+    subsystem->SetOwnerNode(owner);
+    subsystem->AddEmitter([](std::vector<Particle>& particles,
+                             std::vector<ParticleInitOp>&,
+                             uint32_t,
+                             double,
+                             std::span<const ParticleControlpoint>) {
+        if (! particles.empty()) return;
+
+        Particle particle;
+        ParticleModify::InitLifetime(particle, 10.0f);
+        ParticleModify::InitSize(particle, 48.0f);
+        particles.emplace_back(particle);
+    });
+
+    subsystem->Emitt();
+
+    EXPECT_FLOAT_EQ(FirstParticleRawRenderHalfSize(*mesh), 4.0f);
+}
+
+TEST(ParticleMouseControlpoint, RawParticleSizeUsesIsotropicNonuniformOwnerScale) {
+    Scene scene;
+    scene.frameTime = 1.0;
+
+    auto owner = std::make_shared<SceneNode>();
+    owner->SetScale(Eigen::Vector3f(2.0f, 6.0f, 1.0f));
+    owner->SetRotation(Eigen::Vector3f(0.0f, 0.0f, 0.5f));
+
+    auto mesh = MakeParticleMesh(1);
+
+    ParticleSystem system(scene);
+    system.gener = std::make_unique<WPParticleRawGener>();
+
+    auto subsystem = MakeTestSubsystem(system, mesh);
+    subsystem->SetOwnerNode(owner);
+    AddSingleSizedParticleEmitter(*subsystem, 48.0f);
+
+    subsystem->Emitt();
+
+    EXPECT_FLOAT_EQ(FirstParticleRawRenderHalfSize(*mesh), 6.0f);
+}
+
+TEST(ParticleMouseControlpoint, RawParticleSizeUsesEffectiveParentAndChildScale) {
+    Scene scene;
+    scene.frameTime = 1.0;
+
+    auto parent = std::make_shared<SceneNode>();
+    parent->SetScale(Eigen::Vector3f(2.0f, 3.0f, 1.0f));
+
+    auto owner = std::make_shared<SceneNode>();
+    owner->SetScale(Eigen::Vector3f(4.0f, 2.0f, 1.0f));
+    parent->AppendChild(owner);
+
+    auto mesh = MakeParticleMesh(1);
+
+    ParticleSystem system(scene);
+    system.gener = std::make_unique<WPParticleRawGener>();
+
+    auto subsystem = MakeTestSubsystem(system, mesh);
+    subsystem->SetOwnerNode(owner);
+    AddSingleSizedParticleEmitter(*subsystem, 48.0f);
+
+    subsystem->Emitt();
+
+    EXPECT_NEAR(FirstParticleRawRenderHalfSize(*mesh), 24.0f / 7.0f, 1.0e-5f);
+}
+
+TEST(ParticleMouseControlpoint, RawGeneratorReceivesIndependentOwnerScaleAxes) {
+    Scene scene;
+    scene.frameTime = 1.0;
+
+    auto owner = std::make_shared<SceneNode>();
+    owner->SetScale(Eigen::Vector3f(2.0f, 6.0f, 1.0f));
+    owner->SetRotation(Eigen::Vector3f(0.0f, 0.0f, 0.5f));
+
+    auto* rawGener = new CapturingParticleRawGener();
+    auto  mesh     = std::make_shared<SceneMesh>(true);
+
+    ParticleSystem system(scene);
+    system.gener.reset(rawGener);
+
+    auto subsystem = MakeTestSubsystem(system, mesh);
+    subsystem->SetOwnerNode(owner);
+    AddSingleSizedParticleEmitter(*subsystem, 48.0f);
+
+    subsystem->Emitt();
+
+    EXPECT_FLOAT_EQ(rawGener->last_render_scale.inverse_x, 0.5f);
+    EXPECT_FLOAT_EQ(rawGener->last_render_scale.inverse_y, 1.0f / 6.0f);
+    EXPECT_FLOAT_EQ(rawGener->last_render_scale.isotropic_inverse, 0.25f);
 }
 
 TEST(ParticleMouseControlpoint, MovementIntegratesAfterControlpointAttractUpdatesVelocity) {

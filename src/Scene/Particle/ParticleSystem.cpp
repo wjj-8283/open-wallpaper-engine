@@ -9,6 +9,7 @@
 #include "Utils/Logging.h"
 
 #include <algorithm>
+#include <cmath>
 
 using namespace wallpaper;
 
@@ -68,6 +69,30 @@ void ParticleSubSystem::SetRateMultiplier(std::function<double()> rate_multiplie
 ParticleSubSystem::SpawnType ParticleSubSystem::Type() const { return m_spawn_type; }
 
 u32 ParticleSubSystem::MaxInstanceCount() const { return m_maxcount_instance; };
+
+namespace
+{
+float InverseScaleOrIdentity(float scale) {
+    if (! std::isfinite(scale) || scale <= 1.0e-6f) return 1.0f;
+    return 1.0f / scale;
+}
+} // namespace
+
+ParticleRenderScale ParticleSubSystem::RenderScale() const {
+    auto owner = m_owner_node.lock();
+    if (! owner) return {};
+
+    owner->UpdateTrans();
+    const auto& transform = owner->RenderTrans();
+    const float scale_x = static_cast<float>(transform.block<3, 1>(0, 0).norm());
+    const float scale_y = static_cast<float>(transform.block<3, 1>(0, 1).norm());
+
+    return {
+        .inverse_x         = InverseScaleOrIdentity(scale_x),
+        .inverse_y         = InverseScaleOrIdentity(scale_y),
+        .isotropic_inverse = InverseScaleOrIdentity((scale_x + scale_y) * 0.5f),
+    };
+}
 
 void ParticleSubSystem::UpdateMouseControlpoints() {
     const auto            pointer = m_sys.scene.pointerPosition;
@@ -232,7 +257,7 @@ void ParticleSubSystem::Emitt() {
 
     m_mesh->SetDirty();
 
-    m_sys.gener->GenGLData(m_instances, *m_mesh, m_genSpecOp);
+    m_sys.gener->GenGLData(m_instances, *m_mesh, m_genSpecOp, RenderScale());
 
     for (auto& child : m_children) {
         child->Emitt();

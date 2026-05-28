@@ -86,6 +86,8 @@ public:
     u32       MaxInstanceCount() const;
 
 private:
+    ParticleRenderScale RenderScale() const;
+
     ParticleSystem&            m_sys;
     std::shared_ptr<SceneMesh> m_mesh;
     std::weak_ptr<SceneNode>   m_owner_node;

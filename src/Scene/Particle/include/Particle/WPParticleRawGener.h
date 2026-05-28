@@ -11,7 +11,7 @@ public:
     virtual ~WPParticleRawGener() {};
 
     virtual void GenGLData(std::span<const std::unique_ptr<ParticleInstance>>, SceneMesh&,
-                           ParticleRawGenSpecOp&);
+                           ParticleRawGenSpecOp&, ParticleRenderScale render_scale);
 };
 
 } // namespace wallpaper

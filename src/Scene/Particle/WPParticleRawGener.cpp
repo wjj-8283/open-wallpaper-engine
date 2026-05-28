@@ -38,7 +38,8 @@ inline void AssignVertex(std::span<float> dst, std::span<const float> src, uint 
 
 inline usize GenParticleData(std::span<const std::unique_ptr<ParticleInstance>> instances,
                              const ParticleRawGenSpecOp& specOp, WPGOption opt,
-                             SceneVertexArray& sv) noexcept {
+                             SceneVertexArray& sv,
+                             ParticleRenderScale render_scale) noexcept {
     std::array<float, 32 * 4> storage;
 
     float* data = storage.data();
@@ -57,8 +58,13 @@ inline usize GenParticleData(std::span<const std::unique_ptr<ParticleInstance>> 
             float lifetime = p.lifetime;
             specOp(p, { &lifetime });
 
-            auto  pos  = inst->GetBoundedData().pos + p.position;
-            float size = p.size / 2.0f;
+            auto pos = inst->GetBoundedData().pos + p.position;
+            // The generic particle ABI exposes one scalar ParticleSize in
+            // a_TexCoordVec4.w, so nonuniform owner scale cannot be undone per
+            // billboard axis without changing the shader/vertex contract.
+            // Use the isotropic value derived from effective X/Y column norms;
+            // inverse_x/y are carried for generators that can represent them.
+            float size = (p.size / 2.0f) * render_scale.isotropic_inverse;
 
             usize offset = 0;
 
@@ -227,7 +233,8 @@ inline void updateIndexArray(uint16_t index, size_t count, SceneIndexArray& iarr
 } // namespace
 
 void WPParticleRawGener::GenGLData(std::span<const std::unique_ptr<ParticleInstance>> instances,
-                                   SceneMesh& mesh, ParticleRawGenSpecOp& specOp) {
+                                   SceneMesh& mesh, ParticleRawGenSpecOp& specOp,
+                                   ParticleRenderScale render_scale) {
     auto& sv = mesh.GetVertexArray(0);
     auto& si = mesh.GetIndexArray(0);
 
@@ -242,7 +249,7 @@ void WPParticleRawGener::GenGLData(std::span<const std::unique_ptr<ParticleInsta
         particle_num = GenRopeParticleData(particles, specOp, opt, sv);
     else
     */
-    particle_num += GenParticleData(instances, specOp, opt, sv);
+    particle_num += GenParticleData(instances, specOp, opt, sv, render_scale);
 
     // LOG_INFO("num: %d", particle_num);
 
