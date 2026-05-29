@@ -1,6 +1,7 @@
 #pragma once
 
 #include "WPJson.hpp"
+#include "WPImageObject.h"
 #include "WPObjectSchema.hpp"
 
 #include <array>
@@ -132,8 +133,9 @@ struct WPTextObject : WPMiscObjectBase {
     bool                 ledsource { false };
     std::array<float, 3> backgroundcolor { 0.0f, 0.0f, 0.0f };
     float                backgroundbrightness { 1.0f };
+    std::vector<WPImageEffect> effects;
 
-    bool FromJson(const nlohmann::json& json, fs::VFS&) {
+    bool FromJson(const nlohmann::json& json, fs::VFS& vfs) {
         FromCommonJson(json);
         if (json.contains("text")) text = json.at("text");
         if (json.contains("font")) font = json.at("font");
@@ -160,6 +162,13 @@ struct WPTextObject : WPMiscObjectBase {
         GET_JSON_NAME_VALUE_NOWARN(json, "ledsource", ledsource);
         GET_JSON_NAME_VALUE_NOWARN(json, "backgroundcolor", backgroundcolor);
         GET_JSON_NAME_VALUE_NOWARN(json, "backgroundbrightness", backgroundbrightness);
+        if (json.contains("effects")) {
+            for (const auto& jE : json.at("effects")) {
+                WPImageEffect effect;
+                effect.FromJson(jE, vfs);
+                effects.push_back(std::move(effect));
+            }
+        }
         return true;
     }
 };

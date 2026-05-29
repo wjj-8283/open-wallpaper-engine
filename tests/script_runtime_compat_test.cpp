@@ -351,6 +351,22 @@ export function update(value) {
                                            180.0f * 1000000000.0f);
 }
 
+TEST(ScriptRuntimeCompat, WEColorHsv2RgbSupportsNamespaceImport) {
+    ScriptEngine engine;
+    const auto   result = EvaluateScalar(
+        engine,
+        R"JS(
+import * as WEColor from 'WEColor';
+export function update(value) {
+  var red = WEColor.hsv2rgb({ x: 0.0, y: 1.0, z: 1.0 });
+  var green = WEColor.hsv2rgb({ x: 1.0 / 3.0, y: 1.0, z: 1.0 });
+  var blue = WEColor.hsv2rgb({ x: 2.0 / 3.0, y: 1.0, z: 1.0 });
+  return red.x + green.y * 10 + blue.z * 100;
+}
+)JS");
+    EXPECT_FLOAT_EQ(result.getFloat(), 111.0f);
+}
+
 TEST(ScriptRuntimeCompat, Vec3SupportsCopyAndScalarSplat) {
     ScriptEngine engine;
     const auto result = EvaluateScalar(

@@ -2,6 +2,7 @@
 #include "Runtime/RuntimeImageSource.hpp"
 #include "Runtime/DynamicValue.hpp"
 #include "Runtime/SceneRuntimeContext.hpp"
+#include "Runtime/SceneSettingResolver.hpp"
 #include "Scene/include/Scene/Scene.h"
 #include "Scene/include/Scene/SceneMaterial.h"
 #include "Scene/include/Scene/SceneMesh.h"
@@ -186,6 +187,41 @@ TEST(MediaThumbnailTextureSmoke, ConstantShaderValuesPreserveUserBindingAndFallb
     EXPECT_FLOAT_EQ(alpha->second.value[0], 1.0f);
 }
 
+TEST(MediaThumbnailTextureSmoke, ConstantShaderValuesPreserveScriptAndScriptProperties) {
+    const nlohmann::json material_json = {
+        { "passes",
+          { {
+              { "shader", "workshop/2727665642/tint" },
+              { "textures", { "workshop/2727665642/bar" } },
+              { "constantshadervalues",
+                {
+                    { "color",
+                      {
+                          { "script",
+                            "export var scriptProperties = createScriptProperties().addSlider({name:'speed',value:1}).finish(); export function update(value) { value.x = scriptProperties.speed; return value; }" },
+                          { "scriptproperties",
+                            { { "speed", { { "user", "speed_user" }, { "value", 0.5f } } } } },
+                          { "value", "1 1 1" },
+                      } },
+                } },
+          } } },
+    };
+
+    wpscene::WPMaterial material;
+    ASSERT_TRUE(material.FromJson(material_json));
+
+    const auto color = material.constantshadervalues.find("color");
+    ASSERT_NE(color, material.constantshadervalues.end());
+    EXPECT_NE(color->second.script.find("export function update"), std::string::npos);
+    ASSERT_TRUE(color->second.scriptproperties.is_object());
+    ASSERT_TRUE(color->second.scriptproperties.contains("speed"));
+    EXPECT_EQ(color->second.scriptproperties.at("speed").at("user"), "speed_user");
+    ASSERT_EQ(color->second.value.size(), 3u);
+    EXPECT_FLOAT_EQ(color->second.value[0], 1.0f);
+    EXPECT_FLOAT_EQ(color->second.value[1], 1.0f);
+    EXPECT_FLOAT_EQ(color->second.value[2], 1.0f);
+}
+
 TEST(MediaThumbnailTextureSmoke, RuntimeMaterialConstantsFollowProjectProperties) {
     auto runtime = CreateSceneRuntimeContext(SceneRuntimeBootstrap {
         .project_properties = {
@@ -232,6 +268,51 @@ TEST(MediaThumbnailTextureSmoke, RuntimeMaterialConstantsFollowProjectProperties
     EXPECT_FLOAT_EQ(material.customShader.constValues.at("g_Color")[2], 0.75f);
     ASSERT_EQ(material.customShader.constValues.at("g_UserAlpha").size(), 1u);
     EXPECT_FLOAT_EQ(material.customShader.constValues.at("g_UserAlpha")[0], 0.25f);
+}
+
+TEST(MediaThumbnailTextureSmoke, RuntimeMaterialConstantsEvaluatePropertyScriptsEachTick) {
+    auto runtime = CreateSceneRuntimeContext(SceneRuntimeBootstrap {
+        .project_properties = {
+            { "speed", RuntimeScalarValue::Float(0.5f) },
+        },
+    });
+    ASSERT_NE(runtime, nullptr);
+
+    SceneMaterial material;
+    const nlohmann::json setting = {
+        {
+            "script",
+            R"JS(
+export var scriptProperties = createScriptProperties()
+  .addSlider({ name: 'speed', value: 1.0 })
+  .finish();
+export function update(value) {
+  value.x = scriptProperties.speed;
+  value.y = engine.runtime;
+  return value;
+}
+)JS",
+        },
+        { "scriptproperties", { { "speed", { { "user", "speed" }, { "value", 1.0f } } } } },
+        { "value", "1 1 1" },
+    };
+
+    auto value = ResolveVec3Setting(*runtime, setting, "bar material");
+    runtime->RegisterMaterialConstant(&material, "g_TintColor", std::move(value));
+
+    runtime->Tick(0.25);
+    ASSERT_TRUE(material.customShader.constValues.contains("g_TintColor"));
+    ASSERT_EQ(material.customShader.constValues.at("g_TintColor").size(), 3u);
+    EXPECT_FLOAT_EQ(material.customShader.constValues.at("g_TintColor")[0], 0.5f);
+    EXPECT_FLOAT_EQ(material.customShader.constValues.at("g_TintColor")[1], 0.25f);
+
+    runtime->ApplyProjectPropertyOverride({
+        { "speed", RuntimeScalarValue::Float(0.75f) },
+    });
+    runtime->Tick(0.5);
+    EXPECT_FLOAT_EQ(material.customShader.constValues.at("g_TintColor")[0], 0.75f);
+    EXPECT_FLOAT_EQ(material.customShader.constValues.at("g_TintColor")[1], 0.75f);
+    EXPECT_EQ(runtime->scriptErrorCount(), 0u);
 }
 
 TEST(MediaThumbnailTextureSmoke, CompositeMaterialShaderValueRequiresSplitShaderAndMaterialValues) {

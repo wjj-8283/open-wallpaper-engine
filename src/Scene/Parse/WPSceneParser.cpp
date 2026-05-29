@@ -45,6 +45,7 @@
 #include <cmath>
 #include <optional>
 #include <regex>
+#include <span>
 #include <variant>
 #include <Eigen/Dense>
 
@@ -1256,6 +1257,35 @@ void RegisterTextTexture(Scene& scene, const std::string& texture_name,
     scene.textures[texture_name] = std::move(texture);
 }
 
+std::array<int32_t, 2> ResolveTextRenderExtent(const TextLayerState& state,
+                                               Eigen::Vector2f raster_size,
+                                               const ParseContext& context) {
+    const auto bounds = TextLayerRenderBoundsForRasterSize(state, raster_size);
+    const auto layout_width = bounds.right - bounds.left;
+    const auto layout_height = bounds.top - bounds.bottom;
+    const auto width = std::max(
+        4,
+        static_cast<int32_t>(std::lround(std::max(layout_width, raster_size.x()))));
+    const auto height = std::max(
+        4,
+        static_cast<int32_t>(std::lround(std::max(layout_height, raster_size.y()))));
+    return {
+        width > 2 ? width : std::max(4, context.ortho_w),
+        height > 2 ? height : std::max(4, context.ortho_h),
+    };
+}
+
+void AttachEffectsToNode(ParseContext& context,
+                         SceneNode& node,
+                         SceneMesh& final_mesh,
+                         std::span<const wpscene::WPImageEffect> effects,
+                         const std::string& runtime_name,
+                         std::array<int32_t, 2> render_extent,
+                         BlendMode final_blend,
+                         const ShaderValueMap& base_const_svs,
+                         std::array<float, 2> parallax_depth,
+                         bool copy_background);
+
 TextLayerState ResolveTextLayerState(const wpscene::WPTextObject& obj, fs::VFS& vfs,
                                      std::string text, std::string font_key,
                                      Eigen::Vector2f explicit_size, std::string anchor,
@@ -1406,6 +1436,18 @@ void ParseTextObj(ParseContext& context, wpscene::WPTextObject& obj) {
                                    Vec3SettingSemantic::AnglesDegrees,
                                    allow_script_update));
         }
+        if (! obj.effects.empty()) {
+            AttachEffectsToNode(context,
+                                *node,
+                                *mesh,
+                                obj.effects,
+                                runtime_name,
+                                ResolveTextRenderExtent(text_state, size, context),
+                                BlendMode::Translucent,
+                                context.global_base_uniforms,
+                                { obj.parallaxDepth[0], obj.parallaxDepth[1] },
+                                true);
+        }
     } else {
         LoadAlignment(*node, anchor, size);
     }
@@ -1494,6 +1536,34 @@ MakeMaterialConstantValue(const wpscene::WPConstantShaderValue& source) {
     return std::make_unique<DynamicValue>(0.0f);
 }
 
+nlohmann::json MaterialConstantSettingJson(const wpscene::WPConstantShaderValue& source) {
+    nlohmann::json setting;
+    if (source.value.size() == 1) {
+        setting["value"] = source.value[0];
+    } else if (! source.value.empty()) {
+        setting["value"] = source.value;
+    } else {
+        setting["value"] = 0.0f;
+    }
+    if (! source.user.empty()) setting["user"] = source.user;
+    if (! source.script.empty()) setting["script"] = source.script;
+    if (! source.scriptproperties.is_null()) {
+        setting["scriptproperties"] = source.scriptproperties;
+    }
+    return setting;
+}
+
+std::unique_ptr<DynamicValue>
+MakeMaterialConstantDynamicValue(SceneRuntimeContext& context,
+                                 const wpscene::WPConstantShaderValue& source,
+                                 std::string_view current_layer_name) {
+    if (source.script.empty()) return MakeMaterialConstantValue(source);
+    if (source.value.size() >= 3) {
+        return ResolveVec3Setting(context, MaterialConstantSettingJson(source), current_layer_name);
+    }
+    return ResolveStringSetting(context, MaterialConstantSettingJson(source), current_layer_name);
+}
+
 void LoadMaterialConstantShaderValuesImpl(SceneMaterial& material, const wpscene::WPMaterial& wpmat,
                                           const WPShaderInfo& info) {
     // load glname from alias and load to constvalue
@@ -1529,18 +1599,173 @@ void RegisterMaterialConstants(ParseContext& context, SceneMaterial* material,
     for (const auto& cs : wpmat.constantshadervalues) {
         const auto& name  = cs.first;
         const auto& value = cs.second;
-        if (value.user.empty()) continue;
+        if (value.user.empty() && value.script.empty()) continue;
 
         const auto glname = ResolveConstvalueGlName(name, info);
         if (glname.empty()) continue;
 
-        auto dynamic_value = MakeMaterialConstantValue(value);
-        if (auto* property_value = context.scene->runtime->FindPropertyValue(value.user);
-            property_value != nullptr) {
-            dynamic_value->connect(property_value);
+        auto dynamic_value =
+            MakeMaterialConstantDynamicValue(*context.scene->runtime, value, glname);
+        if (value.script.empty()) {
+            if (auto* property_value = context.scene->runtime->FindPropertyValue(value.user);
+                property_value != nullptr) {
+                dynamic_value->connect(property_value);
+            }
         }
         context.scene->runtime->RegisterMaterialConstant(
             material, glname, std::move(dynamic_value));
+    }
+}
+
+void AttachEffectsToNode(ParseContext& context,
+                         SceneNode& node,
+                         SceneMesh& final_mesh,
+                         std::span<const wpscene::WPImageEffect> effects,
+                         const std::string& runtime_name,
+                         std::array<int32_t, 2> render_extent,
+                         BlendMode final_blend,
+                         const ShaderValueMap& base_const_svs,
+                         std::array<float, 2> parallax_depth,
+                         bool copy_background) {
+    if (effects.empty()) return;
+
+    auto& scene    = *context.scene;
+    auto& vfs      = *context.vfs;
+    const auto nodeAddr = getAddr(&node);
+    auto  camera   = std::make_shared<SceneCamera>(render_extent[0], render_extent[1], -1.0f, 1.0f);
+    camera->AttatchNode(context.effect_camera_node);
+    scene.cameras[nodeAddr] = camera;
+    node.SetCamera(nodeAddr);
+
+    const auto effect_ppong_a = std::string(WE_EFFECT_PPONG_PREFIX_A.data()) + nodeAddr;
+    const auto effect_ppong_b = std::string(WE_EFFECT_PPONG_PREFIX_B.data()) + nodeAddr;
+    auto       effect_layer   = std::make_shared<SceneImageEffectLayer>(
+        &node,
+        static_cast<float>(render_extent[0]),
+        static_cast<float>(render_extent[1]),
+        effect_ppong_a,
+        effect_ppong_b);
+    effect_layer->SetFinalBlend(final_blend);
+    effect_layer->FinalMesh().ChangeMeshDataFrom(final_mesh);
+    effect_layer->FinalNode().CopyTrans(node);
+    node.SetRenderTransformOverride(Eigen::Matrix4d::Identity());
+    if (! copy_background) node.SetSkipRenderPass(true);
+    scene.cameras.at(nodeAddr)->AttatchImgEffect(effect_layer);
+    if (scene.runtime != nullptr) {
+        scene.runtime->RegisterNodeEffectFinal(runtime_name, &node, effect_layer.get());
+    }
+
+    scene.renderTargets[effect_ppong_a] = {
+        .width      = render_extent[0],
+        .height     = render_extent[1],
+        .allowReuse = true,
+    };
+    scene.renderTargets[effect_ppong_b] = scene.renderTargets.at(effect_ppong_a);
+
+    for (const auto& effect : effects) {
+        if (! effect.visible) continue;
+
+        auto image_effect = std::make_shared<SceneImageEffect>();
+        const std::string inRT { effect_ppong_a };
+        const std::string effaddr = getAddr(effect_layer.get());
+
+        std::unordered_map<std::string, std::string> fboMap;
+        fboMap["previous"] = inRT;
+        for (const auto& fbo : effect.fbos) {
+            const auto rtname = EnsureSpecTexName(fbo.name + "_" + effaddr);
+            scene.renderTargets[rtname] = {
+                .width      = ResolveRenderTargetDimension(
+                    static_cast<float>(render_extent[0]), fbo.scale),
+                .height     = ResolveRenderTargetDimension(
+                    static_cast<float>(render_extent[1]), fbo.scale),
+                .allowReuse = true,
+            };
+            fboMap[fbo.name] = rtname;
+        }
+
+        for (const auto& command : effect.commands) {
+            if (command.command != "copy") {
+                LOG_ERROR("Unknown effect command: %s", command.command.c_str());
+                continue;
+            }
+            if (fboMap.count(command.target) + fboMap.count(command.source) < 2) {
+                LOG_ERROR("Unknown effect command dst or src: %s %s",
+                          command.target.c_str(),
+                          command.source.c_str());
+                continue;
+            }
+            image_effect->commands.push_back({
+                .cmd      = SceneImageEffect::CmdType::Copy,
+                .dst      = fboMap[command.target],
+                .src      = fboMap[command.source],
+                .afterpos = command.afterpos,
+            });
+        }
+
+        bool effect_materials_ok = true;
+        for (usize i_mat = 0; i_mat < effect.materials.size(); ++i_mat) {
+            auto wpmat = effect.materials.at(i_mat);
+            std::string matOutRT { WE_EFFECT_PPONG_PREFIX_B };
+            if (effect.passes.size() > i_mat) {
+                const auto& pass = effect.passes.at(i_mat);
+                wpmat.MergePass(pass);
+                for (const auto& bind : pass.bind) {
+                    if (fboMap.count(bind.name) == 0) {
+                        LOG_ERROR("fbo %s not found", bind.name.c_str());
+                        continue;
+                    }
+                    if (wpmat.textures.size() <= static_cast<usize>(bind.index)) {
+                        wpmat.textures.resize(static_cast<usize>(bind.index) + 1u);
+                    }
+                    wpmat.textures[static_cast<usize>(bind.index)] = fboMap[bind.name];
+                }
+                if (! pass.target.empty()) {
+                    if (fboMap.count(pass.target) == 0) {
+                        LOG_ERROR("fbo %s not found", pass.target.c_str());
+                    } else {
+                        matOutRT = fboMap.at(pass.target);
+                    }
+                }
+            }
+            if (wpmat.textures.empty()) wpmat.textures.resize(1);
+            if (wpmat.textures.at(0).empty()) wpmat.textures[0] = inRT;
+
+            auto              effect_node = std::make_shared<SceneNode>();
+            WPShaderInfo      shader_info;
+            SceneMaterial     material;
+            WPShaderValueData shader_value_data;
+            shader_info.baseConstSvs = base_const_svs;
+            shader_info.baseConstSvs["g_EffectTextureProjectionMatrix"] =
+                ShaderValue::fromMatrix(Eigen::Matrix4f::Identity());
+            shader_info.baseConstSvs["g_EffectTextureProjectionMatrixInverse"] =
+                ShaderValue::fromMatrix(Eigen::Matrix4f::Identity());
+
+            if (! LoadMaterial(vfs,
+                               wpmat,
+                               context.scene.get(),
+                               effect_node.get(),
+                               &material,
+                               &shader_value_data,
+                               &shader_info)) {
+                effect_materials_ok = false;
+                break;
+            }
+
+            LoadConstvalue(material, wpmat, shader_info);
+            shader_value_data.parallaxDepth = parallax_depth;
+            auto mesh = std::make_shared<SceneMesh>();
+            mesh->AddMaterial(std::move(material));
+            RegisterMaterialConstants(context, mesh->Material(), wpmat, shader_info);
+            effect_node->AddMesh(mesh);
+            context.shader_updater->SetNodeData(effect_node.get(), shader_value_data);
+            image_effect->nodes.push_back({ matOutRT, effect_node });
+        }
+
+        if (effect_materials_ok) {
+            effect_layer->AddEffect(image_effect);
+        } else {
+            LOG_ERROR("effect '%s' failed to load", effect.name.c_str());
+        }
     }
 }
 

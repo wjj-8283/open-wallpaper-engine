@@ -26,6 +26,8 @@ struct WPUserTexture {
 struct WPConstantShaderValue {
     std::vector<float> value;
     std::string        user;
+    std::string        script;
+    nlohmann::json     scriptproperties;
 };
 
 class WPMaterialPass {

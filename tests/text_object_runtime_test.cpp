@@ -9,6 +9,7 @@
 #include "Runtime/SceneRuntimeContext.hpp"
 #include "VulkanRender/CustomShaderPass.hpp"
 #include "VulkanRender/SceneToRenderGraph.hpp"
+#include "WPShaderValueUpdater.hpp"
 #include "Scene/Scene.h"
 #include "Scene/SceneNode.h"
 #include "Scripting/ScriptEngine.hpp"
@@ -547,6 +548,110 @@ TEST(TextObjectRuntime, ParserCreatesRenderableTextMaterialAndTexture) {
     EXPECT_TRUE(has_uniform_buffer_descriptor);
     EXPECT_TRUE(has_sampler_descriptor);
     EXPECT_EQ(material->blenmode, BlendMode::Translucent);
+}
+
+TEST(TextObjectRuntime, ParserRoutesTextObjectEffectsThroughImageEffectLayer) {
+    fs::VFS vfs;
+    MountAssets(vfs,
+                {
+                    { "/effects/gradient/effect.json",
+                      R"JSON({
+                        "name": "gradient",
+                        "version": 1,
+                        "passes": [
+                          { "material": "materials/effects/gradient.json" }
+                        ]
+                      })JSON" },
+                    { "/materials/effects/gradient.json",
+                      R"JSON({
+                        "passes": [{
+                          "shader": "effects/gradient",
+                          "textures": [null],
+                          "constantshadervalues": {
+                            "gradient": "0.1 0.2 0.3"
+                          }
+                        }]
+                      })JSON" },
+                    { "/shaders/effects/gradient.vert",
+                      "layout(binding = 1) uniform mat4 g_ModelViewProjectionMatrix;\n"
+                      "in vec3 a_Position;\n"
+                      "in vec2 a_TexCoord;\n"
+                      "out vec2 v_TexCoord;\n"
+                      "void main() { gl_Position = g_ModelViewProjectionMatrix * vec4(a_Position, 1.0); v_TexCoord = a_TexCoord; }\n" },
+                    { "/shaders/effects/gradient.frag",
+                      "uniform sampler2D g_Texture0;\n"
+                      "uniform float g_Time;\n"
+                      "uniform vec3 u_Gradient; // {\"material\":\"gradient\",\"default\":\"1 1 1\"}\n"
+                      "in vec2 v_TexCoord;\n"
+                      "void main() { vec4 albedo = texture(g_Texture0, v_TexCoord); gl_FragColor = vec4(u_Gradient * abs(cos(g_Time)), albedo.a); }\n" },
+                });
+    audio::SoundManager sound_manager;
+    WPSceneParser       parser;
+    ProjectProperties   properties;
+    SceneParseRequest   request {
+          .scene_id           = "text-effect",
+          .project_properties = &properties,
+    };
+
+    auto scene = parser.Parse(request,
+                              MinimalSceneObjects(R"JSON([
+            {
+              "id": 1,
+              "name": "caption",
+              "text": "hello",
+              "font": "Arial",
+              "pointsize": 20,
+              "origin": "0 0 0",
+              "size": "200 40",
+              "visible": true,
+              "effects": [
+                {
+                  "file": "effects/gradient/effect.json",
+                  "id": 2,
+                  "visible": true,
+                  "passes": [
+                    {
+                      "constantshadervalues": {
+                        "gradient": "0.25 0.5 0.75"
+                      }
+                    }
+                  ]
+                }
+              ]
+            }
+          ])JSON"),
+                              vfs,
+                              sound_manager);
+
+    ASSERT_NE(scene, nullptr);
+    auto* text = FindRootChild(*scene, "caption");
+    ASSERT_NE(text, nullptr);
+    ASSERT_FALSE(text->Camera().empty());
+    ASSERT_TRUE(scene->cameras.contains(text->Camera()));
+    ASSERT_TRUE(scene->cameras.at(text->Camera())->HasImgEffect());
+
+    auto graph = sceneToRenderGraph(*scene);
+    ASSERT_NE(graph, nullptr);
+
+    auto* effect_node = scene->cameras.at(text->Camera())
+                            ->GetImgEffect()
+                            ->GetEffect(0)
+                            ->nodes.front()
+                            .sceneNode.get();
+    auto* updater = dynamic_cast<WPShaderValueUpdater*>(scene->shaderValueUpdater.get());
+    ASSERT_NE(updater, nullptr);
+    updater->InitUniforms(effect_node, [](std::string_view name) {
+        return name == "g_Time";
+    });
+
+    scene->PassFrameTime(0.5);
+    sprite_map_t sprites;
+    std::unordered_map<std::string, ShaderValue> updates;
+    updater->UpdateUniforms(effect_node, sprites, [&](std::string_view name, ShaderValue value) {
+        updates.emplace(std::string(name), std::move(value));
+    });
+    ASSERT_TRUE(updates.contains("g_Time"));
+    EXPECT_FLOAT_EQ(updates.at("g_Time")[0], 0.5f);
 }
 
 TEST(TextObjectRuntime, ParserStabilizesCascadingRustShaderDefaultTextureMetadata) {

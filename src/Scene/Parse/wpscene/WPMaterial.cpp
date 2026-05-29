@@ -36,6 +36,10 @@ WPConstantShaderValue ParseConstantShaderValue(const nlohmann::json& json) {
 
     if (json.is_object()) {
         GET_JSON_NAME_VALUE_NOWARN(json, "user", result.user);
+        GET_JSON_NAME_VALUE_NOWARN(json, "script", result.script);
+        if (json.contains("scriptproperties")) {
+            result.scriptproperties = json.at("scriptproperties");
+        }
         if (json.contains("value")) {
             if (json.at("value").is_array()) {
                 result.value = json.at("value").get<std::vector<float>>();
