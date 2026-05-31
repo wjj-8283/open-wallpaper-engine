@@ -130,6 +130,7 @@ const char* owe_property_project_property_reset(void);
 int owe_audio_submit_mono_frames(uint32_t sample_rate, uint32_t frame_count,
                                  const float* pcm_frames);
 int owe_audio_submit_frames(uint32_t sample_rate, uint32_t frame_count, const float* pcm_frames);
+int owe_audio_current_spectrum_128(float* out_bins, uintptr_t out_len, uint64_t* out_generation);
 
 /* Thread-local error text for the last non-zero-returning call on this thread. */
 const char* owe_last_error(void);
