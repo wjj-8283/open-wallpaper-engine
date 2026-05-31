@@ -495,6 +495,30 @@ extern "C" int owe_audio_submit_frames(
     return 0;
 }
 
+extern "C" int owe_audio_current_spectrum_128(
+    float* out_bins,
+    uintptr_t out_len,
+    uint64_t* out_generation)
+{
+    clear_last_error();
+    if (out_bins == nullptr) {
+        return finish_with_error("out_bins must not be null");
+    }
+    if (out_len < 128u) {
+        return finish_with_error("out_len must be at least 128");
+    }
+
+    const auto snapshot = wallpaper::audio::CurrentAudioSpectrumSnapshot();
+    for (size_t i = 0; i < 64u; ++i) {
+        out_bins[i]       = snapshot.left64[i];
+        out_bins[i + 64u] = snapshot.right64[i];
+    }
+    if (out_generation != nullptr) {
+        *out_generation = snapshot.generation;
+    }
+    return 0;
+}
+
 extern "C" const char* owe_last_error(void)
 {
     return g_last_error.c_str();
