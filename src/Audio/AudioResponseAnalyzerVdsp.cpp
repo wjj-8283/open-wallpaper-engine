@@ -53,10 +53,17 @@ float EmaAlpha(float elapsed_seconds, float tau_seconds)
 
 float SmoothValue(float current, float target, uint32_t step_count)
 {
+    if (! std::isfinite(current)) {
+        current = 0.0f;
+    }
+    if (! std::isfinite(target)) {
+        target = 0.0f;
+    }
+
     const float elapsed_seconds = kAnalysisStepSeconds * static_cast<float>(step_count);
     const float tau_seconds = target > current ? kAttackTauSeconds : kReleaseTauSeconds;
     const float alpha = EmaAlpha(elapsed_seconds, tau_seconds);
-    return current + alpha * (target - current);
+    return std::clamp(current + alpha * (target - current), 0.0f, 1.0f);
 }
 
 void SmoothBins(
@@ -132,6 +139,11 @@ void AnalyzeMono(const float* mono_pcm, std::array<float, 64>& output)
         windowed.data(),
         1,
         static_cast<vDSP_Length>(kFftSize));
+    for (auto& sample : windowed) {
+        if (! std::isfinite(sample)) {
+            sample = 0.0f;
+        }
+    }
 
     for (size_t index = 0; index < complex_input.size(); ++index) {
         complex_input[index].real = windowed[index * 2u];

@@ -4,7 +4,9 @@
 #include <algorithm>
 #include <array>
 #include <chrono>
+#include <cmath>
 #include <condition_variable>
+#include <iterator>
 #include <mutex>
 #include <thread>
 #include <utility>
@@ -21,6 +23,8 @@ constexpr uint32_t kHopSize = 200;
 constexpr size_t kInterleavedChannels = 2u;
 constexpr size_t kMaxRetainedMonoFrames = static_cast<size_t>(kAnalysisSampleRate) * 2u;
 constexpr auto kSnapshotStaleAfter = std::chrono::milliseconds(250);
+constexpr float kSnapshotSignalFloor = 0.0001f;
+constexpr float kPcmSignalFloor = 0.00005f;
 
 struct AudioResponseState
 {
@@ -67,7 +71,22 @@ bool ValidateSubmitInput(
 bool SnapshotHasSignal(const AudioSpectrumSnapshot& snapshot)
 {
     return std::any_of(snapshot.average64.begin(), snapshot.average64.end(), [](float value) {
-        return value != 0.0f;
+        return std::isfinite(value) && std::abs(value) > kSnapshotSignalFloor;
+    });
+}
+
+float SanitizePcmSample(float sample)
+{
+    if (! std::isfinite(sample)) {
+        return 0.0f;
+    }
+    return std::clamp(sample, -1.0f, 1.0f);
+}
+
+bool PcmBlockHasSignal(const std::array<float, kFftSize>& block)
+{
+    return std::any_of(block.begin(), block.end(), [](float sample) {
+        return std::abs(sample) > kPcmSignalFloor;
     });
 }
 
@@ -120,7 +139,11 @@ void WorkerMain(std::stop_token stop_token)
         }
 
         if (analyze_block) {
-            AnalyzeAudioResponseMonoBlock(block.data(), kFftSize, &next_snapshot);
+            if (PcmBlockHasSignal(block)) {
+                AnalyzeAudioResponseMonoBlock(block.data(), kFftSize, &next_snapshot);
+            } else {
+                ClearAudioResponseSnapshot(&next_snapshot);
+            }
             next_snapshot.generation += 1u;
             next_snapshot.sample_rate = kAnalysisSampleRate;
         }
@@ -173,7 +196,12 @@ bool SubmitValidatedMonoFrames(
         }
     }
 
-    g_state.fifo.insert(g_state.fifo.end(), insert_begin, insert_begin + insert_count);
+    g_state.fifo.reserve(g_state.fifo.size() + insert_count);
+    std::transform(
+        insert_begin,
+        insert_begin + insert_count,
+        std::back_inserter(g_state.fifo),
+        SanitizePcmSample);
     g_state.last_submit_time = submit_time;
     g_state.snapshot.last_submit_sample_rate = sample_rate;
     g_state.snapshot.accepted_frame_count += accepted_frame_count;
