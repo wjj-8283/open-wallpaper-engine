@@ -42,6 +42,13 @@ constexpr std::array vertex_input = {
     VertexInput { { 1.0f, 1.0f, 0.0f }, { 1.0f, 0.0f } },
 };
 
+constexpr std::array flipped_vertex_input = {
+    VertexInput { { -1.0f, -1.0f, 0.0f }, { 1.0f, 1.0f } },
+    VertexInput { { -1.0f, 1.0f, 0.0f }, { 1.0f, 0.0f } },
+    VertexInput { { 1.0f, -1.0f, 0.0f }, { 0.0f, 1.0f } },
+    VertexInput { { 1.0f, 1.0f, 0.0f }, { 0.0f, 0.0f } },
+};
+
 FinPass::FinPass(const Desc&) {}
 FinPass::~FinPass() {}
 namespace
@@ -138,6 +145,11 @@ void FinPass::prepare(Scene& scene, const Device& device, RenderingResources& rr
             auto& buf = m_desc.vertex_buf;
             rr.vertex_buf->allocateSubRef(sizeof(decltype(vertex_input)), buf);
             rr.vertex_buf->writeToBuf(buf, { (uint8_t*)vertex_input.data(), buf.size });
+        }
+        {
+            auto& buf = m_desc.flipped_vertex_buf;
+            rr.vertex_buf->allocateSubRef(sizeof(decltype(flipped_vertex_input)), buf);
+            rr.vertex_buf->writeToBuf(buf, { (uint8_t*)flipped_vertex_input.data(), buf.size });
         }
     }
     DescriptorSetInfo descriptor_info;
@@ -304,8 +316,9 @@ void FinPass::execute(const Device& device, RenderingResources& rr) {
     cmd.SetViewport(0, viewport);
     cmd.SetScissor(0, scissor);
 
-    cmd.BindVertexBuffers(
-        0, 1, std::array { rr.vertex_buf->gpuBuf() }.data(), &m_desc.vertex_buf.offset);
+    const auto& vertex_buf =
+        rr.wallpaper_horizontal_flip ? m_desc.flipped_vertex_buf : m_desc.vertex_buf;
+    cmd.BindVertexBuffers(0, 1, std::array { rr.vertex_buf->gpuBuf() }.data(), &vertex_buf.offset);
     cmd.Draw(4, 1, 0, 0);
     cmd.EndRenderPass();
 
@@ -337,8 +350,10 @@ void FinPass::resetPreparedState(RenderingResources& rr) {
     ResetPipelineParameters(m_desc.pipeline);
     if (rr.vertex_buf != nullptr) {
         rr.vertex_buf->unallocateSubRef(m_desc.vertex_buf);
+        rr.vertex_buf->unallocateSubRef(m_desc.flipped_vertex_buf);
     }
-    m_desc.vertex_buf = {};
+    m_desc.vertex_buf         = {};
+    m_desc.flipped_vertex_buf = {};
 }
 
 void FinPass::destory(const Device&, RenderingResources& rr) { resetPreparedState(rr); }

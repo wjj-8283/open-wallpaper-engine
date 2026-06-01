@@ -466,6 +466,7 @@ public:
         CMD_SET_FILLMODE,
         CMD_SET_SCALINGMODE,
         CMD_SET_SCALINGFACTOR,
+        CMD_SET_HORIZONTAL_FLIP,
         CMD_SET_AUDIO_RESPONSE_ENABLED,
         CMD_SET_MEDIA_INTEGRATION_ENABLED,
         CMD_MEDIA_EVENT_JSON,
@@ -496,6 +497,7 @@ public:
                 CASE_CMD(SET_FILLMODE);
                 CASE_CMD(SET_SCALINGMODE);
                 CASE_CMD(SET_SCALINGFACTOR);
+                CASE_CMD(SET_HORIZONTAL_FLIP);
                 CASE_CMD(SET_AUDIO_RESPONSE_ENABLED);
                 CASE_CMD(SET_MEDIA_INTEGRATION_ENABLED);
                 CASE_CMD(MEDIA_EVENT_JSON);
@@ -564,6 +566,7 @@ private:
         m_render->compileRenderGraph(*m_scene, *m_rg);
         m_render->SetWallpaperScalingMode(m_scalingmode);
         m_render->SetWallpaperScalingFactor(m_scalingfactor);
+        m_render->SetWallpaperHorizontalFlip(m_horizontal_flip);
         if (m_fillmode_explicit) {
             m_render->UpdateCameraFillMode(*m_scene, m_fillmode);
         }
@@ -610,7 +613,10 @@ private:
             // LOG_INFO("frame info, fps: %.1f, frametime: %.1f", 1.0f, 1000.0f*m_scene->frameTime);
             m_scene->shaderValueUpdater->FrameBegin();
             {
-                auto pos                 = m_mouse_pos.load();
+                auto pos = m_mouse_pos.load();
+                if (m_horizontal_flip) {
+                    pos[0] = 1.0f - pos[0];
+                }
                 m_scene->pointerPosition = pos;
                 m_scene->shaderValueUpdater->MouseInput(pos[0], pos[1]);
                 if (m_scene->runtime != nullptr) {
@@ -674,6 +680,15 @@ private:
             }
         }
     }
+    MHANDLER_CMD(SET_HORIZONTAL_FLIP) {
+        bool value { false };
+        if (msg->findBool("value", &value)) {
+            m_horizontal_flip = value;
+            if (renderInited()) {
+                m_render->SetWallpaperHorizontalFlip(m_horizontal_flip);
+            }
+        }
+    }
     MHANDLER_CMD(SET_AUDIO_RESPONSE_ENABLED) {
         bool enabled { false };
         if (msg->findBool("value", &enabled)) {
@@ -734,6 +749,7 @@ private:
             m_render->init(*info);
             m_render->SetWallpaperScalingMode(m_scalingmode);
             m_render->SetWallpaperScalingFactor(m_scalingfactor);
+            m_render->SetWallpaperHorizontalFlip(m_horizontal_flip);
             m_render->SetVideoPlaybackRate(m_speed);
             m_render->SetVideoPlaybackPaused(! frame_timer.Running());
 
@@ -795,6 +811,7 @@ private:
     bool                                     m_fillmode_explicit { false };
     WallpaperScalingMode                     m_scalingmode { WallpaperScalingMode::FIT };
     float                                    m_scalingfactor { 1.0f };
+    bool                                     m_horizontal_flip { false };
     bool                                     m_media_integration_enabled { false };
     std::optional<SystemMediaArtworkPayload> m_pending_system_media_artwork {};
 
@@ -1010,6 +1027,14 @@ MHANDLER_CMD_IMPL(MainHandler, SET_PROPERTY) {
                 auto nmsg =
                     CreateMsgWithCmd(m_render_handler, RenderHandler::CMD::CMD_SET_SCALINGFACTOR);
                 nmsg->setFloat("value", value);
+                nmsg->post();
+            }
+        } else if (property == PROPERTY_HORIZONTAL_FLIP) {
+            bool value { false };
+            if (msg->findBool("value", &value)) {
+                auto nmsg =
+                    CreateMsgWithCmd(m_render_handler, RenderHandler::CMD::CMD_SET_HORIZONTAL_FLIP);
+                nmsg->setBool("value", value);
                 nmsg->post();
             }
         } else if (property == PROPERTY_GRAPHIVZ) {

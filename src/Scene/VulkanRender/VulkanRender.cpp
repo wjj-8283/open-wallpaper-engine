@@ -100,6 +100,7 @@ struct VulkanRender::Impl {
     void UpdateCameraFillMode(Scene&, wallpaper::FillMode);
     void SetWallpaperScalingMode(wallpaper::WallpaperScalingMode);
     void SetWallpaperScalingFactor(double);
+    void SetWallpaperHorizontalFlip(bool);
 
     bool initRes();
     void executePreparedPasses(RenderingResources&);
@@ -133,6 +134,7 @@ struct VulkanRender::Impl {
     WallpaperScalingLayout                m_scaling_layout {};
     WallpaperScalingMode                  m_scaling_mode { WallpaperScalingMode::FIT };
     double                                m_scaling_factor { 1.0 };
+    bool                                  m_horizontal_flip { false };
     double                                m_display_scale_factor { 1.0 };
     VkExtent2D                            m_requested_render_extent {};
 
@@ -174,6 +176,9 @@ void VulkanRender::SetWallpaperScalingMode(wallpaper::WallpaperScalingMode mode)
 }
 void VulkanRender::SetWallpaperScalingFactor(double factor) {
     pImpl->SetWallpaperScalingFactor(factor);
+}
+void VulkanRender::SetWallpaperHorizontalFlip(bool enabled) {
+    pImpl->SetWallpaperHorizontalFlip(enabled);
 }
 void VulkanRender::SetVideoPlaybackPaused(bool paused) {
     if (pImpl->m_device != nullptr) {
@@ -455,6 +460,7 @@ void VulkanRender::Impl::drawFrame(Scene& scene) {
         scene, std::max(1u, output_extent.width), std::max(1u, output_extent.height));
     m_rendering_resources.wallpaper_viewport = MakeWallpaperViewport(m_scaling_layout);
     m_rendering_resources.wallpaper_scissor  = MakeWallpaperScissor(m_scaling_layout);
+    m_rendering_resources.wallpaper_horizontal_flip = m_horizontal_flip;
 
     // LOG_INFO("used ram: %fm", (m_device->GetUsage()/1024.0f)/1024.0f);
 
@@ -752,6 +758,11 @@ void VulkanRender::Impl::SetWallpaperScalingMode(wallpaper::WallpaperScalingMode
 void VulkanRender::Impl::SetWallpaperScalingFactor(double factor) {
     m_scaling_factor = NormalizeScaleFactor(factor);
     LOG_INFO("wallpaper scaling factor: %.3f", m_scaling_factor);
+}
+
+void VulkanRender::Impl::SetWallpaperHorizontalFlip(bool enabled) {
+    m_horizontal_flip = enabled;
+    LOG_INFO("wallpaper horizontal flip: %s", m_horizontal_flip ? "enabled" : "disabled");
 }
 
 void VulkanRender::Impl::clearLastRenderGraph() {

@@ -45,6 +45,7 @@ public:
     void UpdateCameraFillMode(Scene&, wallpaper::FillMode);
     void SetWallpaperScalingMode(wallpaper::WallpaperScalingMode);
     void SetWallpaperScalingFactor(double);
+    void SetWallpaperHorizontalFlip(bool enabled);
     void SetVideoPlaybackPaused(bool paused);
     void SetVideoPlaybackRate(float rate);
 

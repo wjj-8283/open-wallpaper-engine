@@ -19,6 +19,7 @@ constexpr std::string_view PROPERTY_FPS                       = "fps";
 constexpr std::string_view PROPERTY_FILLMODE                  = "fillmode";
 constexpr std::string_view PROPERTY_SCALINGMODE               = "scalingmode";
 constexpr std::string_view PROPERTY_SCALINGFACTOR             = "scalingfactor";
+constexpr std::string_view PROPERTY_HORIZONTAL_FLIP            = "horizontal_flip";
 constexpr std::string_view PROPERTY_SPEED                     = "speed";
 constexpr std::string_view PROPERTY_GRAPHIVZ                  = "graphivz";
 constexpr std::string_view PROPERTY_VOLUME                    = "volume";

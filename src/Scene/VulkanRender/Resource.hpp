@@ -25,6 +25,7 @@ struct RenderingResources {
 
     VkViewport wallpaper_viewport {};
     VkRect2D   wallpaper_scissor {};
+    bool       wallpaper_horizontal_flip { false };
 };
 } // namespace vulkan
 } // namespace wallpaper

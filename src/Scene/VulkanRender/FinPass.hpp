@@ -32,6 +32,7 @@ public:
         VkClearValue    clear_value;
 
         StagingBufferRef   vertex_buf;
+        StagingBufferRef   flipped_vertex_buf;
         PipelineParameters pipeline;
     };
 

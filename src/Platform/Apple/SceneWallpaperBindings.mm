@@ -445,6 +445,11 @@ extern "C" const char* owe_property_scaling_factor(void)
     return property_name(wallpaper::PROPERTY_SCALINGFACTOR);
 }
 
+extern "C" const char* owe_property_horizontal_flip(void)
+{
+    return property_name(wallpaper::PROPERTY_HORIZONTAL_FLIP);
+}
+
 extern "C" const char* owe_property_audio_response_enabled(void)
 {
     return property_name(wallpaper::PROPERTY_AUDIO_RESPONSE_ENABLED);
