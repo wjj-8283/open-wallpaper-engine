@@ -2200,7 +2200,7 @@ TEST(TextObjectRuntime, Workshop3409533530FullSceneKeepsClockRenderPassAndTextur
     if (home.empty()) GTEST_SKIP() << "HOME is not set";
 
     const auto workshop_root =
-        home / "/Users/wjj/Pictures/wallpaper/3409533530";
+        home / "Library/Application Support/Steam/steamapps/workshop/content/431960/3409533530";
     const auto project_json = ReadTextFile(workshop_root / "project.json");
     if (! project_json.has_value() || ! std::filesystem::exists(workshop_root / "scene.pkg")) {
         GTEST_SKIP() << "local workshop 3409533530 package is not available";
@@ -2208,7 +2208,7 @@ TEST(TextObjectRuntime, Workshop3409533530FullSceneKeepsClockRenderPassAndTextur
 
     fs::VFS vfs;
     const auto common_assets =
-        home / "/Users/wjj/Pictures/assets_2";
+        home / "Library/Application Support/Steam/steamapps/workshop/content/431960/3409533530";
     if (std::filesystem::exists(common_assets)) {
         ASSERT_TRUE(MountPhysicalAssets(vfs, common_assets));
     }

@@ -163,10 +163,10 @@ gtest_discover_tests(
 
 add_executable(unpack_shader_compile_smoke unpack_shader_compile_smoke.cpp)
 set(UNPACK_SHADER_COMPILE_SMOKE_CORPUS_ROOT
-    "/Users/wjj/Pictures/wallpaper"
+    "/Users/molyuu/Workspace/WallpaperEngine/unpack"
     CACHE PATH "Root directory containing unpacked Wallpaper Engine workshop scenes for shader smoke tests")
 set(UNPACK_SHADER_COMPILE_SMOKE_COMMON_ASSETS
-    "/Users/wjj/Pictures/assets_2"
+    "/Users/molyuu/Library/Application Support/Steam/steamapps/common/wallpaper_engine/assets"
     CACHE PATH "Wallpaper Engine common assets directory for shader smoke tests")
 target_link_libraries(
     unpack_shader_compile_smoke
