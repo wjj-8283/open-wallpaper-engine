@@ -19,7 +19,6 @@ function M.auto_detect(ctx)
         table.insert(candidates, home .. "/.local/share/Steam/steamapps/workshop/content/431960")
         table.insert(candidates,
             home .. "/.var/app/com.valvesoftware.Steam/data/Steam/steamapps/workshop/content/431960")
-        table.insert(candidates, home .. "/Users/wjj/Pictures/wallpaper")
     end
     local found, seen = {}, {}
     for _, p in ipairs(candidates) do
