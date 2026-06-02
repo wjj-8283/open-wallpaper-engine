@@ -505,6 +505,10 @@ int32_t ResolveRenderTargetDimension(float base_dimension, uint32_t scale) {
         static_cast<int32_t>(std::lround(base_dimension / static_cast<float>(scale))));
 }
 
+int32_t ResolveTextEffectRenderTargetDimension(float base_dimension, uint32_t /* scale */) {
+    return ResolveRenderTargetDimension(base_dimension, 1);
+}
+
 // mapRate < 1.0
 void GenCardMesh(SceneMesh& mesh, const std::array<uint16_t, 2> size,
                  const std::array<float, 2> mapRate = { 1.0f, 1.0f }) {
@@ -562,6 +566,30 @@ void GenTextCardMesh(SceneMesh& mesh, TextLayerRenderBounds bounds,
 		tw, 0.0f,
 	};
     // clang-format on
+
+    SceneVertexArray vertex(
+        {
+            { WE_IN_POSITION.data(), VertexType::FLOAT3 },
+            { WE_IN_TEXCOORD.data(), VertexType::FLOAT2 },
+        },
+        4);
+    vertex.SetVertex(WE_IN_POSITION, pos);
+    vertex.SetVertex(WE_IN_TEXCOORD, texCoord);
+    mesh.AddVertexArray(std::move(vertex));
+}
+
+void GenTextCardMesh(SceneMesh& mesh, TextLayerRenderBounds bounds,
+                     TextLayerTextureBounds texture) {
+    constexpr float z = 0.0f;
+
+    const std::array pos = {
+        bounds.left, bounds.bottom, z, bounds.left, bounds.top, z,
+        bounds.right, bounds.bottom, z, bounds.right, bounds.top, z,
+    };
+    const std::array texCoord = {
+        texture.left, texture.bottom, texture.left, texture.top,
+        texture.right, texture.bottom, texture.right, texture.top,
+    };
 
     SceneVertexArray vertex(
         {
@@ -1257,22 +1285,41 @@ void RegisterTextTexture(Scene& scene, const std::string& texture_name,
     scene.textures[texture_name] = std::move(texture);
 }
 
-std::array<int32_t, 2> ResolveTextRenderExtent(const TextLayerState& state,
-                                               Eigen::Vector2f raster_size,
+std::array<int32_t, 2> ResolveTextRenderExtent(Eigen::Vector2f render_size,
                                                const ParseContext& context) {
-    const auto bounds = TextLayerRenderBoundsForRasterSize(state, raster_size);
-    const auto layout_width = bounds.right - bounds.left;
-    const auto layout_height = bounds.top - bounds.bottom;
     const auto width = std::max(
         4,
-        static_cast<int32_t>(std::lround(std::max(layout_width, raster_size.x()))));
+        static_cast<int32_t>(std::lround(std::max(1.0f, render_size.x()))));
     const auto height = std::max(
         4,
-        static_cast<int32_t>(std::lround(std::max(layout_height, raster_size.y()))));
+        static_cast<int32_t>(std::lround(std::max(1.0f, render_size.y()))));
     return {
         width > 2 ? width : std::max(4, context.ortho_w),
         height > 2 ? height : std::max(4, context.ortho_h),
     };
+}
+
+Eigen::Vector2f ResolveTextEffectCapacity(const wpscene::WPTextObject& obj,
+                                          const ParseContext& context,
+                                          Eigen::Vector2f render_size) {
+    constexpr float kExplicitCapacityScale = 4.0f;
+    constexpr float kImplicitCapacityScale = 2.0f;
+    constexpr float kMaxRuntimeTextEffectSize = 4096.0f;
+    const Eigen::Vector2f max_capacity(kMaxRuntimeTextEffectSize, kMaxRuntimeTextEffectSize);
+    const bool has_explicit_size = obj.size[0] > 0.0f && obj.size[1] > 0.0f;
+    Eigen::Vector2f capacity = render_size.cwiseMin(max_capacity);
+    if (has_explicit_size) {
+        capacity = capacity.cwiseMax(
+            (Eigen::Vector2f(obj.size[0], obj.size[1]) * kExplicitCapacityScale)
+                .cwiseMin(max_capacity));
+    } else {
+        capacity =
+            capacity.cwiseMax((Eigen::Vector2f(static_cast<float>(context.ortho_w),
+                                               static_cast<float>(context.ortho_h)) *
+                               kImplicitCapacityScale)
+                                  .cwiseMin(max_capacity));
+    }
+    return capacity.cwiseMin(max_capacity);
 }
 
 void AttachEffectsToNode(ParseContext& context,
@@ -1281,10 +1328,12 @@ void AttachEffectsToNode(ParseContext& context,
                          std::span<const wpscene::WPImageEffect> effects,
                          const std::string& runtime_name,
                          std::array<int32_t, 2> render_extent,
+                         Eigen::Vector2f render_center,
                          BlendMode final_blend,
                          const ShaderValueMap& base_const_svs,
                          std::array<float, 2> parallax_depth,
-                         bool copy_background);
+                         bool copy_background,
+                         bool preserve_effect_fbo_resolution);
 
 TextLayerState ResolveTextLayerState(const wpscene::WPTextObject& obj, fs::VFS& vfs,
                                      std::string text, std::string font_key,
@@ -1342,9 +1391,18 @@ TextLayerState ResolveTextLayerState(const wpscene::WPTextObject& obj, fs::VFS& 
 
 void ParseTextObj(ParseContext& context, wpscene::WPTextObject& obj) {
     const auto runtime_name = TextRuntimeName(context, obj);
-    const auto text         = JsonStringOrObjectValue(obj.text, "text");
+    auto       text         = JsonStringOrObjectValue(obj.text, "text");
     const auto font_key     = JsonStringOrObjectValue(obj.font, {});
     const auto anchor       = TextAnchorForObject(obj);
+    std::unique_ptr<DynamicValue> runtime_text_value;
+    if (context.scene->runtime != nullptr && HasRuntimeTextValueBinding(obj.text)) {
+        runtime_text_value =
+            ResolveStringSetting(*context.scene->runtime, obj.text, runtime_name);
+        if (runtime_text_value != nullptr) {
+            context.scene->runtime->PrimeTextValue(*runtime_text_value);
+            text = runtime_text_value->toString();
+        }
+    }
     auto       text_state   = ResolveTextLayerState(obj,
                                             *context.vfs,
                                             text,
@@ -1352,7 +1410,24 @@ void ParseTextObj(ParseContext& context, wpscene::WPTextObject& obj) {
                                             Eigen::Vector2f(obj.size[0], obj.size[1]),
                                             anchor,
                                             runtime_name);
-    auto       size         = TextLayerRasterSize(text_state);
+    auto       layout_size         = TextLayerLayoutSize(text_state);
+    auto       raster_size         = TextLayerRasterSize(text_state);
+    auto       render_frame        = TextLayerRenderFrameForRasterSize(text_state, raster_size);
+    auto       effect_target_size =
+        ResolveTextEffectCapacity(obj, context, layout_size.cwiseMax(raster_size));
+    auto       effect_target_frame =
+        TextLayerRenderFrameForCapacity(text_state, raster_size, effect_target_size);
+    auto       effect_render_extent = ResolveTextRenderExtent(effect_target_frame.size, context);
+    effect_target_frame = TextLayerRenderFrameForTargetExtent(
+        effect_target_frame,
+        Eigen::Vector2f(static_cast<float>(effect_render_extent[0]),
+                        static_cast<float>(effect_render_extent[1])));
+    auto       effect_final_frame =
+        TextLayerRenderFrameClampedToTarget(render_frame, effect_target_frame);
+    auto       effect_texture_bounds = TextLayerTextureBoundsForRenderTarget(
+        effect_final_frame,
+        effect_target_frame.size,
+        effect_target_frame.center);
 
     auto       node_iterator = context.layer_nodes.find(obj.id);
     auto       node = node_iterator != context.layer_nodes.end() && node_iterator->second != nullptr
@@ -1367,8 +1442,10 @@ void ParseTextObj(ParseContext& context, wpscene::WPTextObject& obj) {
     node->ID() = obj.id;
 
     auto mesh = std::make_shared<SceneMesh>(true);
-    GenTextCardMesh(*mesh, TextLayerRenderBoundsForRasterSize(text_state, size));
+    GenTextCardMesh(*mesh, render_frame.bounds);
     node->AddMesh(mesh);
+    SceneMesh effect_final_mesh(true);
+    GenTextCardMesh(effect_final_mesh, effect_final_frame.bounds, effect_texture_bounds);
 
     const bool allow_script_update =
         AllowSceneScriptsForVisibilitySetting(obj.dynamic_visible, obj.visible_setting);
@@ -1399,10 +1476,9 @@ void ParseTextObj(ParseContext& context, wpscene::WPTextObject& obj) {
                                runtime_name,
                                allow_script_update));
         context.scene->runtime->RegisterTextLayer(runtime_name, std::move(text_state));
-        if (HasRuntimeTextValueBinding(obj.text)) {
+        if (runtime_text_value != nullptr) {
             context.scene->runtime->RegisterTextValue(
-                runtime_name,
-                ResolveStringSetting(*context.scene->runtime, obj.text, runtime_name));
+                runtime_name, std::move(runtime_text_value), false);
         }
         context.scene->runtime->SetNodeTextAlignment(
             runtime_name, anchor, Vector3f(obj.origin.data()));
@@ -1439,17 +1515,19 @@ void ParseTextObj(ParseContext& context, wpscene::WPTextObject& obj) {
         if (! obj.effects.empty()) {
             AttachEffectsToNode(context,
                                 *node,
-                                *mesh,
+                                effect_final_mesh,
                                 obj.effects,
                                 runtime_name,
-                                ResolveTextRenderExtent(text_state, size, context),
+                                effect_render_extent,
+                                effect_target_frame.center,
                                 BlendMode::Translucent,
                                 context.global_base_uniforms,
                                 { obj.parallaxDepth[0], obj.parallaxDepth[1] },
-                                true);
+                                /* copy_background */ true,
+                                /* preserve_effect_fbo_resolution */ true);
         }
     } else {
-        LoadAlignment(*node, anchor, size);
+        LoadAlignment(*node, anchor, layout_size);
     }
 
     if (allow_script_update) {
@@ -1623,17 +1701,22 @@ void AttachEffectsToNode(ParseContext& context,
                          std::span<const wpscene::WPImageEffect> effects,
                          const std::string& runtime_name,
                          std::array<int32_t, 2> render_extent,
+                         Eigen::Vector2f render_center,
                          BlendMode final_blend,
                          const ShaderValueMap& base_const_svs,
                          std::array<float, 2> parallax_depth,
-                         bool copy_background) {
+                         bool copy_background,
+                         bool preserve_effect_fbo_resolution) {
     if (effects.empty()) return;
 
     auto& scene    = *context.scene;
     auto& vfs      = *context.vfs;
     const auto nodeAddr = getAddr(&node);
     auto  camera   = std::make_shared<SceneCamera>(render_extent[0], render_extent[1], -1.0f, 1.0f);
-    camera->AttatchNode(context.effect_camera_node);
+    auto camera_node = std::make_shared<SceneNode>();
+    camera_node->SetTranslate(Eigen::Vector3f(render_center.x(), render_center.y(), 0.0f));
+    camera->AttatchNode(camera_node);
+    scene.sceneGraph->AppendChild(camera_node);
     scene.cameras[nodeAddr] = camera;
     node.SetCamera(nodeAddr);
 
@@ -1647,12 +1730,27 @@ void AttachEffectsToNode(ParseContext& context,
         effect_ppong_b);
     effect_layer->SetFinalBlend(final_blend);
     effect_layer->FinalMesh().ChangeMeshDataFrom(final_mesh);
+    effect_layer->SetFinalMeshDynamic(final_mesh.Dynamic());
     effect_layer->FinalNode().CopyTrans(node);
     node.SetRenderTransformOverride(Eigen::Matrix4d::Identity());
     if (! copy_background) node.SetSkipRenderPass(true);
     scene.cameras.at(nodeAddr)->AttatchImgEffect(effect_layer);
     if (scene.runtime != nullptr) {
-        scene.runtime->RegisterNodeEffectFinal(runtime_name, &node, effect_layer.get());
+        scene.runtime->RegisterNodeEffectFinal(
+            runtime_name,
+            &node,
+            effect_layer.get(),
+            TextLayerRenderFrame {
+                .bounds = {
+                    .left = render_center.x() - static_cast<float>(render_extent[0]) * 0.5f,
+                    .right = render_center.x() + static_cast<float>(render_extent[0]) * 0.5f,
+                    .bottom = render_center.y() - static_cast<float>(render_extent[1]) * 0.5f,
+                    .top = render_center.y() + static_cast<float>(render_extent[1]) * 0.5f,
+                },
+                .size = Eigen::Vector2f(static_cast<float>(render_extent[0]),
+                                        static_cast<float>(render_extent[1])),
+                .center = render_center,
+            });
     }
 
     scene.renderTargets[effect_ppong_a] = {
@@ -1673,11 +1771,12 @@ void AttachEffectsToNode(ParseContext& context,
         fboMap["previous"] = inRT;
         for (const auto& fbo : effect.fbos) {
             const auto rtname = EnsureSpecTexName(fbo.name + "_" + effaddr);
+            const auto resolve_dimension = preserve_effect_fbo_resolution
+                                               ? ResolveTextEffectRenderTargetDimension
+                                               : ResolveRenderTargetDimension;
             scene.renderTargets[rtname] = {
-                .width      = ResolveRenderTargetDimension(
-                    static_cast<float>(render_extent[0]), fbo.scale),
-                .height     = ResolveRenderTargetDimension(
-                    static_cast<float>(render_extent[1]), fbo.scale),
+                .width      = resolve_dimension(static_cast<float>(render_extent[0]), fbo.scale),
+                .height     = resolve_dimension(static_cast<float>(render_extent[1]), fbo.scale),
                 .allowReuse = true,
             };
             fboMap[fbo.name] = rtname;

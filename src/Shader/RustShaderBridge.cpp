@@ -40,6 +40,7 @@ size_t rs_shader_program_stage_spv_word_count(const RsShaderProgram* program, si
 const char* rs_shader_program_metadata_json(const RsShaderProgram* program);
 const char* rs_shader_program_reflection_json(const RsShaderProgram* program);
 const char* rs_shader_program_diagnostics_json(const RsShaderProgram* program);
+const char* rs_shader_program_cache_key(const RsShaderProgram* program);
 void rs_shader_program_free(RsShaderProgram* program);
 const char* rs_shader_last_error();
 }
@@ -412,6 +413,7 @@ bool CompileRustShaderProgramJson(
     next_output.metadata_json    = BorrowedString(rs_shader_program_metadata_json(program.ptr));
     next_output.reflection_json  = BorrowedString(rs_shader_program_reflection_json(program.ptr));
     next_output.diagnostics_json = BorrowedString(rs_shader_program_diagnostics_json(program.ptr));
+    next_output.cache_key        = BorrowedString(rs_shader_program_cache_key(program.ptr));
     ApplyRustShaderMetadataJson(next_output.metadata_json, next_output);
     ApplyRustShaderReflectionJson(next_output.reflection_json, next_output);
 

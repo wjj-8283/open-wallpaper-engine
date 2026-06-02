@@ -557,6 +557,69 @@ TextLayerRenderBounds TextLayerRenderBoundsForRasterSize(const TextLayerState& s
     return bounds;
 }
 
+TextLayerRenderFrame TextLayerRenderFrameForRasterSize(const TextLayerState& state,
+                                                       Eigen::Vector2f raster_size) {
+    const auto bounds = TextLayerRenderBoundsForRasterSize(state, raster_size);
+    return {
+        .bounds = bounds,
+        .size   = Eigen::Vector2f(bounds.right - bounds.left, bounds.top - bounds.bottom),
+        .center = Eigen::Vector2f((bounds.left + bounds.right) * 0.5f,
+                                  (bounds.bottom + bounds.top) * 0.5f),
+    };
+}
+
+TextLayerRenderFrame TextLayerRenderFrameForCapacity(const TextLayerState& state,
+                                                     Eigen::Vector2f raster_size,
+                                                     Eigen::Vector2f capacity_size) {
+    const auto frame = TextLayerRenderFrameForRasterSize(state, raster_size);
+    return TextLayerRenderFrameForTargetExtent(frame, capacity_size);
+}
+
+TextLayerRenderFrame TextLayerRenderFrameForTargetExtent(const TextLayerRenderFrame& frame,
+                                                         Eigen::Vector2f target_extent) {
+    return {
+        .bounds = {
+            .left = frame.center.x() - (target_extent.x() * 0.5f),
+            .right = frame.center.x() + (target_extent.x() * 0.5f),
+            .bottom = frame.center.y() - (target_extent.y() * 0.5f),
+            .top = frame.center.y() + (target_extent.y() * 0.5f),
+        },
+        .size = target_extent,
+        .center = frame.center,
+    };
+}
+
+TextLayerRenderFrame TextLayerRenderFrameClampedToTarget(const TextLayerRenderFrame& frame,
+                                                         const TextLayerRenderFrame& target) {
+    const TextLayerRenderBounds bounds {
+        .left   = std::clamp(frame.bounds.left, target.bounds.left, target.bounds.right),
+        .right  = std::clamp(frame.bounds.right, target.bounds.left, target.bounds.right),
+        .bottom = std::clamp(frame.bounds.bottom, target.bounds.bottom, target.bounds.top),
+        .top    = std::clamp(frame.bounds.top, target.bounds.bottom, target.bounds.top),
+    };
+    return {
+        .bounds = bounds,
+        .size   = Eigen::Vector2f(bounds.right - bounds.left, bounds.top - bounds.bottom),
+        .center = Eigen::Vector2f((bounds.left + bounds.right) * 0.5f,
+                                  (bounds.bottom + bounds.top) * 0.5f),
+    };
+}
+
+TextLayerTextureBounds TextLayerTextureBoundsForRenderTarget(const TextLayerRenderFrame& frame,
+                                                             Eigen::Vector2f target_size,
+                                                             Eigen::Vector2f target_center) {
+    if (target_size.x() <= 0.0f || target_size.y() <= 0.0f) return {};
+
+    const auto target_left   = target_center.x() - (target_size.x() * 0.5f);
+    const auto target_bottom = target_center.y() - (target_size.y() * 0.5f);
+    return {
+        .left = (frame.bounds.left - target_left) / target_size.x(),
+        .right = (frame.bounds.right - target_left) / target_size.x(),
+        .bottom = 1.0f - ((frame.bounds.bottom - target_bottom) / target_size.y()),
+        .top = 1.0f - ((frame.bounds.top - target_bottom) / target_size.y()),
+    };
+}
+
 std::string TextTextureName(std::string_view layer_key) {
     return "runtime/text/" + std::string(layer_key);
 }

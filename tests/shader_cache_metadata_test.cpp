@@ -6,8 +6,11 @@
 #include <gtest/gtest.h>
 
 #include <array>
+#include <cstdint>
 #include <filesystem>
+#include <limits>
 #include <string>
+#include <string_view>
 #include <vector>
 
 namespace wallpaper
@@ -52,6 +55,49 @@ void main() {
     };
 }
 
+uint32_t ReadU32LE(const std::string& bytes, size_t offset) {
+    return static_cast<uint32_t>(static_cast<unsigned char>(bytes.at(offset))) |
+           (static_cast<uint32_t>(static_cast<unsigned char>(bytes.at(offset + 1))) << 8u) |
+           (static_cast<uint32_t>(static_cast<unsigned char>(bytes.at(offset + 2))) << 16u) |
+           (static_cast<uint32_t>(static_cast<unsigned char>(bytes.at(offset + 3))) << 24u);
+}
+
+void ExpectCacheBodyMatchesCodes(const std::string& cache_body,
+                                 const std::vector<ShaderCode>& codes) {
+    ASSERT_GE(cache_body.size(), 9u + 4u + 256u);
+    EXPECT_EQ(cache_body.substr(0, 8), "SPVS0001");
+    EXPECT_EQ(static_cast<unsigned char>(cache_body.at(8)), 0u);
+
+    size_t offset = 9;
+    ASSERT_GE(cache_body.size() - offset, sizeof(uint32_t));
+    ASSERT_EQ(ReadU32LE(cache_body, offset), codes.size());
+    offset += sizeof(uint32_t);
+
+    for (size_t i = 0; i < codes.size(); ++i) {
+        ASSERT_GE(cache_body.size() - offset, sizeof(uint32_t));
+        const auto size_bytes = ReadU32LE(cache_body, offset);
+        offset += sizeof(uint32_t);
+
+        ASSERT_LE(codes[i].size(),
+                  std::numeric_limits<uint32_t>::max() / sizeof(uint32_t));
+        ASSERT_EQ(size_bytes, codes[i].size() * sizeof(uint32_t));
+        ASSERT_GE(cache_body.size() - offset, size_bytes);
+        ASSERT_GE(size_bytes, sizeof(uint32_t));
+        EXPECT_EQ(ReadU32LE(cache_body, offset), 0x07230203u);
+
+        const auto payload = std::string_view(cache_body).substr(offset, size_bytes);
+        const auto expected =
+            std::string_view(reinterpret_cast<const char*>(codes[i].data()), size_bytes);
+        EXPECT_EQ(payload, expected);
+        offset += size_bytes;
+    }
+
+    ASSERT_EQ(cache_body.size() - offset, 256u);
+    for (; offset < cache_body.size(); ++offset) {
+        EXPECT_EQ(static_cast<unsigned char>(cache_body.at(offset)), 0u);
+    }
+}
+
 TEST(ShaderCacheMetadataTest, CacheHitStillPopulatesActiveTextureSlots) {
 #ifndef WESCENE_HAS_RUST_SHADER_FFI
     GTEST_SKIP() << "Rust shader staticlib was not linked";
@@ -74,6 +120,19 @@ TEST(ShaderCacheMetadataTest, CacheHitStillPopulatesActiveTextureSlots) {
             "demo-scene", "tests/cache-metadata", units, codes, vfs, &info, textures))
             << shader::LastRustShaderError();
         ASSERT_TRUE(units[1].preprocess_info.active_tex_slots.contains(0));
+        const auto cache_root = temp / "cache" / "demo-scene" / "spvs01";
+        ASSERT_TRUE(std::filesystem::is_directory(cache_root));
+
+        std::vector<std::filesystem::path> cache_files;
+        for (const auto& entry : std::filesystem::directory_iterator(cache_root)) {
+            if (entry.path().extension() == ".spvs") {
+                cache_files.push_back(entry.path());
+            }
+        }
+        ASSERT_EQ(cache_files.size(), 1u);
+
+        const auto cache_body = fs::CreateCBinaryStream(cache_files.front().string())->ReadAllStr();
+        ExpectCacheBodyMatchesCodes(cache_body, codes);
     }
 
     {

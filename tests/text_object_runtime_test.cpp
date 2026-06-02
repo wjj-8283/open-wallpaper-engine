@@ -37,6 +37,7 @@
 #include <optional>
 #include <span>
 #include <string>
+#include <string_view>
 #include <thread>
 #include <vector>
 
@@ -199,6 +200,67 @@ MeshBounds MeshLocalBounds(const SceneMesh& mesh) {
 
 Eigen::Vector2f MeshSize(const SceneMesh& mesh) {
     return MeshLocalBounds(mesh).Size();
+}
+
+Eigen::Vector2f MeshCenter(const SceneMesh& mesh) {
+    const auto bounds = MeshLocalBounds(mesh);
+    return Eigen::Vector2f((bounds.min_x + bounds.max_x) * 0.5f,
+                           (bounds.min_y + bounds.max_y) * 0.5f);
+}
+
+struct TexCoordBounds {
+    float min_u { 0.0f };
+    float max_u { 0.0f };
+    float min_v { 0.0f };
+    float max_v { 0.0f };
+};
+
+TexCoordBounds MeshTexCoordBounds(const SceneMesh& mesh) {
+    const auto& vertices = mesh.GetVertexArray(0);
+    const auto  stride   = vertices.OneSize();
+    const auto* data     = vertices.Data();
+    if (data == nullptr || vertices.VertexCount() == 0) {
+        return {};
+    }
+
+    const auto offsets = vertices.GetAttrOffsetMap();
+    const auto offset_iterator = offsets.find(WE_IN_TEXCOORD.data());
+    if (offset_iterator == offsets.end()) return {};
+    const auto tex_offset = offset_iterator->second.offset / sizeof(float);
+
+    TexCoordBounds bounds {
+        .min_u = data[tex_offset + 0u],
+        .max_u = data[tex_offset + 0u],
+        .min_v = data[tex_offset + 1u],
+        .max_v = data[tex_offset + 1u],
+    };
+    for (std::size_t index = 1; index < vertices.VertexCount(); ++index) {
+        const auto base = index * stride + tex_offset;
+        const float u  = data[base + 0u];
+        const float v  = data[base + 1u];
+        bounds.min_u   = std::min(bounds.min_u, u);
+        bounds.max_u   = std::max(bounds.max_u, u);
+        bounds.min_v   = std::min(bounds.min_v, v);
+        bounds.max_v   = std::max(bounds.max_v, v);
+    }
+    return bounds;
+}
+
+void ExpectTextEffectFboCoversFinalMesh(const SceneRenderTarget& fbo,
+                                        const SceneMesh& final_mesh,
+                                        int32_t target_width,
+                                        int32_t target_height) {
+    const auto final_mesh_size = MeshSize(final_mesh);
+    const auto uv_bounds       = MeshTexCoordBounds(final_mesh);
+    const auto effective_width =
+        static_cast<float>(fbo.width) * (uv_bounds.max_u - uv_bounds.min_u);
+    const auto effective_height =
+        static_cast<float>(fbo.height) * (uv_bounds.max_v - uv_bounds.min_v);
+    constexpr float kUvResolutionTolerance = 1.0e-3f;
+    EXPECT_GE(effective_width + kUvResolutionTolerance,
+              std::min(static_cast<float>(target_width), std::ceil(final_mesh_size.x())));
+    EXPECT_GE(effective_height + kUvResolutionTolerance,
+              std::min(static_cast<float>(target_height), std::ceil(final_mesh_size.y())));
 }
 
 bool ShaderUsesUniformMember(const ShaderCode& spirv, std::string_view member_name) {
@@ -652,6 +714,750 @@ TEST(TextObjectRuntime, ParserRoutesTextObjectEffectsThroughImageEffectLayer) {
     });
     ASSERT_TRUE(updates.contains("g_Time"));
     EXPECT_FLOAT_EQ(updates.at("g_Time")[0], 0.5f);
+}
+
+TEST(TextObjectRuntime, RuntimeTextEffectTargetsResizeWithTextRasterSize) {
+    fs::VFS vfs;
+    MountAssets(vfs,
+                {
+                    { "/effects/gradient/effect.json",
+                      R"JSON({
+                        "name": "gradient",
+                        "version": 1,
+                        "fbos": [
+                          { "name": "_rt_BlurBuffer", "scale": 2 }
+                        ],
+                        "passes": [
+                          {
+                            "material": "materials/effects/gradient.json",
+                            "bind": [
+                              { "name": "previous", "index": 0 }
+                            ],
+                            "target": "_rt_BlurBuffer"
+                          },
+                          {
+                            "material": "materials/effects/gradient.json",
+                            "bind": [
+                              { "name": "_rt_BlurBuffer", "index": 0 }
+                            ]
+                          }
+                        ]
+                      })JSON" },
+                    { "/materials/effects/gradient.json",
+                      R"JSON({
+                        "passes": [{
+                          "shader": "effects/gradient",
+                          "textures": [null]
+                        }]
+                      })JSON" },
+                    { "/shaders/effects/gradient.vert",
+                      "layout(binding = 1) uniform mat4 g_ModelViewProjectionMatrix;\n"
+                      "in vec3 a_Position;\n"
+                      "in vec2 a_TexCoord;\n"
+                      "out vec2 v_TexCoord;\n"
+                      "void main() { gl_Position = g_ModelViewProjectionMatrix * vec4(a_Position, 1.0); v_TexCoord = a_TexCoord; }\n" },
+                    { "/shaders/effects/gradient.frag",
+                      "uniform sampler2D g_Texture0;\n"
+                      "in vec2 v_TexCoord;\n"
+                      "void main() { gl_FragColor = texture(g_Texture0, v_TexCoord); }\n" },
+                });
+    audio::SoundManager sound_manager;
+    WPSceneParser       parser;
+    ProjectProperties   properties;
+    SceneParseRequest   request {
+          .scene_id           = "text-effect-resize",
+          .project_properties = &properties,
+    };
+
+    auto scene = parser.Parse(request,
+                              MinimalSceneObjects(R"JSON([
+            {
+              "id": 1,
+              "name": "caption",
+              "text": "a",
+              "font": "Arial",
+              "pointsize": 20,
+              "padding": 0,
+              "origin": "0 0 0",
+              "visible": true,
+              "effects": [
+                {
+                  "file": "effects/gradient/effect.json",
+                  "id": 2,
+                  "visible": true
+                }
+              ]
+            }
+          ])JSON"),
+                              vfs,
+                              sound_manager);
+
+    ASSERT_NE(scene, nullptr);
+    ASSERT_NE(scene->runtime, nullptr);
+    auto* text = FindRootChild(*scene, "caption");
+    ASSERT_NE(text, nullptr);
+    ASSERT_FALSE(text->Camera().empty());
+    auto camera = scene->cameras.at(text->Camera());
+    ASSERT_TRUE(camera->HasImgEffect());
+    const auto effect_layer = camera->GetImgEffect();
+    ASSERT_NE(effect_layer, nullptr);
+
+    auto* pingpong = scene->FindRenderTarget(effect_layer->FirstTarget());
+    ASSERT_NE(pingpong, nullptr);
+    const auto initial_pingpong_width = pingpong->width;
+    const auto initial_camera_width   = camera->Width();
+    auto* fbo = scene->FindRenderTarget(
+        effect_layer->GetEffect(0)->nodes.front().output);
+    ASSERT_NE(fbo, nullptr);
+    const auto initial_fbo_width = fbo->width;
+    const auto initial_text_mesh_size = MeshSize(*text->Mesh());
+    const auto initial_final_mesh_size = MeshSize(effect_layer->FinalMesh());
+
+    auto graph = sceneToRenderGraph(*scene);
+    ASSERT_NE(graph, nullptr);
+    auto* resolved_final = effect_layer->ResolvedFinalRenderNode();
+    ASSERT_NE(resolved_final, nullptr);
+    ASSERT_NE(resolved_final->Mesh(), nullptr);
+    EXPECT_TRUE(resolved_final->Mesh()->Dynamic());
+
+    ASSERT_TRUE(scene->runtime->SetNodeText("caption", "a much longer caption for effects"));
+    PumpTextUntilClean(*scene->runtime);
+
+    pingpong = scene->FindRenderTarget(effect_layer->FirstTarget());
+    ASSERT_NE(pingpong, nullptr);
+    fbo = scene->FindRenderTarget(effect_layer->GetEffect(0)->nodes.front().output);
+    ASSERT_NE(fbo, nullptr);
+    EXPECT_EQ(pingpong->width, initial_pingpong_width);
+    EXPECT_EQ(camera->Width(), initial_camera_width);
+    EXPECT_EQ(static_cast<int>(camera->Width()), pingpong->width);
+    EXPECT_EQ(static_cast<int>(camera->Height()), pingpong->height);
+    const auto resized_text_mesh_size = MeshSize(*text->Mesh());
+    const auto resized_final_mesh_size = MeshSize(effect_layer->FinalMesh());
+    ExpectTextEffectFboCoversFinalMesh(*fbo,
+                                       effect_layer->FinalMesh(),
+                                       pingpong->width,
+                                       pingpong->height);
+    EXPECT_EQ(fbo->width, initial_fbo_width);
+    EXPECT_GT(resized_text_mesh_size.x(), initial_text_mesh_size.x());
+    EXPECT_GT(resized_final_mesh_size.x(), initial_final_mesh_size.x());
+    EXPECT_NEAR(resized_final_mesh_size.x(), resized_text_mesh_size.x(), 1.0f);
+    EXPECT_NEAR(resized_final_mesh_size.y(), resized_text_mesh_size.y(), 1.0f);
+    const auto uv_bounds = MeshTexCoordBounds(effect_layer->FinalMesh());
+    EXPECT_GE(uv_bounds.min_u, 0.0f);
+    EXPECT_LE(uv_bounds.max_u, 1.0f);
+    EXPECT_GE(uv_bounds.min_v, 0.0f);
+    EXPECT_LE(uv_bounds.max_v, 1.0f);
+
+    ASSERT_EQ(resolved_final, effect_layer->ResolvedFinalRenderNode());
+    ASSERT_NE(resolved_final->Mesh(), nullptr);
+    EXPECT_TRUE(resolved_final->Mesh()->Dynamic());
+    const auto resolved_final_mesh_size = MeshSize(*resolved_final->Mesh());
+    EXPECT_NEAR(resolved_final_mesh_size.x(), resized_text_mesh_size.x(), 1.0f);
+    EXPECT_NEAR(resolved_final_mesh_size.y(), resized_text_mesh_size.y(), 1.0f);
+    const auto resolved_uv_bounds = MeshTexCoordBounds(*resolved_final->Mesh());
+    EXPECT_GE(resolved_uv_bounds.min_u, 0.0f);
+    EXPECT_LE(resolved_uv_bounds.max_u, 1.0f);
+    EXPECT_GE(resolved_uv_bounds.min_v, 0.0f);
+    EXPECT_LE(resolved_uv_bounds.max_v, 1.0f);
+    EXPECT_FALSE(scene->runtime->ConsumeSceneGraphMutationFlag());
+}
+
+TEST(TextObjectRuntime, ParserTextEffectFinalUvsUseRoundedRenderTargetExtent) {
+    fs::VFS vfs;
+    MountAssets(vfs,
+                {
+                    { "/effects/gradient/effect.json",
+                      R"JSON({
+                        "name": "gradient",
+                        "version": 1,
+                        "passes": [
+                          { "material": "materials/effects/gradient.json" }
+                        ]
+                      })JSON" },
+                    { "/materials/effects/gradient.json",
+                      R"JSON({
+                        "passes": [{
+                          "shader": "effects/gradient",
+                          "textures": [null]
+                        }]
+                      })JSON" },
+                    { "/shaders/effects/gradient.vert",
+                      "layout(binding = 1) uniform mat4 g_ModelViewProjectionMatrix;\n"
+                      "in vec3 a_Position;\n"
+                      "in vec2 a_TexCoord;\n"
+                      "out vec2 v_TexCoord;\n"
+                      "void main() { gl_Position = g_ModelViewProjectionMatrix * vec4(a_Position, 1.0); v_TexCoord = a_TexCoord; }\n" },
+                    { "/shaders/effects/gradient.frag",
+                      "uniform sampler2D g_Texture0;\n"
+                      "in vec2 v_TexCoord;\n"
+                      "void main() { gl_FragColor = texture(g_Texture0, v_TexCoord); }\n" },
+                });
+    audio::SoundManager sound_manager;
+    WPSceneParser       parser;
+    ProjectProperties   properties;
+    SceneParseRequest   request {
+          .scene_id           = "text-effect-rounded-uvs",
+          .project_properties = &properties,
+    };
+
+    auto scene = parser.Parse(request,
+                              MinimalSceneObjects(R"JSON([
+            {
+              "id": 1,
+              "name": "caption",
+              "text": "a",
+              "font": "Arial",
+              "pointsize": 20.125,
+              "padding": 0,
+              "origin": "0 0 0",
+              "size": [93.6, 41.6],
+              "visible": true,
+              "effects": [
+                {
+                  "file": "effects/gradient/effect.json",
+                  "id": 2,
+                  "visible": true
+                }
+              ]
+            }
+          ])JSON"),
+                              vfs,
+                              sound_manager);
+
+    ASSERT_NE(scene, nullptr);
+    ASSERT_NE(scene->runtime, nullptr);
+    auto* text = FindRootChild(*scene, "caption");
+    ASSERT_NE(text, nullptr);
+    ASSERT_FALSE(text->Camera().empty());
+    auto camera = scene->cameras.at(text->Camera());
+    ASSERT_TRUE(camera->HasImgEffect());
+    const auto effect_layer = camera->GetImgEffect();
+    ASSERT_NE(effect_layer, nullptr);
+
+    const auto final_mesh_size = MeshSize(effect_layer->FinalMesh());
+    const auto uv_bounds       = MeshTexCoordBounds(effect_layer->FinalMesh());
+    const auto expected_u_span = final_mesh_size.x() / static_cast<float>(camera->Width());
+    const auto expected_v_span = final_mesh_size.y() / static_cast<float>(camera->Height());
+    EXPECT_NEAR(uv_bounds.max_u - uv_bounds.min_u, expected_u_span, 1.0e-5f);
+    EXPECT_NEAR(uv_bounds.max_v - uv_bounds.min_v, expected_v_span, 1.0e-5f);
+    EXPECT_LT(uv_bounds.max_u - uv_bounds.min_u, 1.0f);
+    EXPECT_LT(uv_bounds.max_v - uv_bounds.min_v, 1.0f);
+}
+
+TEST(TextObjectRuntime, OversizedTextEffectClipsFinalMeshToBoundedTarget) {
+    fs::VFS vfs;
+    MountAssets(vfs,
+                {
+                    { "/effects/gradient/effect.json",
+                      R"JSON({
+                        "name": "gradient",
+                        "version": 1,
+                        "fbos": [
+                          { "name": "_rt_BlurBuffer", "scale": 2 }
+                        ],
+                        "passes": [
+                          {
+                            "material": "materials/effects/gradient.json",
+                            "bind": [
+                              { "name": "previous", "index": 0 }
+                            ],
+                            "target": "_rt_BlurBuffer"
+                          },
+                          {
+                            "material": "materials/effects/gradient.json",
+                            "bind": [
+                              { "name": "_rt_BlurBuffer", "index": 0 }
+                            ]
+                          }
+                        ]
+                      })JSON" },
+                    { "/materials/effects/gradient.json",
+                      R"JSON({
+                        "passes": [{
+                          "shader": "effects/gradient",
+                          "textures": [null]
+                        }]
+                      })JSON" },
+                    { "/shaders/effects/gradient.vert",
+                      "layout(binding = 1) uniform mat4 g_ModelViewProjectionMatrix;\n"
+                      "in vec3 a_Position;\n"
+                      "in vec2 a_TexCoord;\n"
+                      "out vec2 v_TexCoord;\n"
+                      "void main() { gl_Position = g_ModelViewProjectionMatrix * vec4(a_Position, 1.0); v_TexCoord = a_TexCoord; }\n" },
+                    { "/shaders/effects/gradient.frag",
+                      "uniform sampler2D g_Texture0;\n"
+                      "in vec2 v_TexCoord;\n"
+                      "void main() { gl_FragColor = texture(g_Texture0, v_TexCoord); }\n" },
+                });
+    audio::SoundManager sound_manager;
+    WPSceneParser       parser;
+    ProjectProperties   properties;
+    SceneParseRequest   request {
+          .scene_id           = "text-effect-oversized-cap",
+          .project_properties = &properties,
+    };
+    const std::string oversized_text(260, 'W');
+
+    auto scene = parser.Parse(request,
+                              MinimalSceneObjects(R"JSON([
+            {
+              "id": 1,
+              "name": "caption",
+              "text": ")JSON" + oversized_text +
+                                                  R"JSON(",
+              "font": "Arial",
+              "pointsize": 40,
+              "padding": 0,
+              "origin": "0 0 0",
+              "visible": true,
+              "effects": [
+                {
+                  "file": "effects/gradient/effect.json",
+                  "id": 2,
+                  "visible": true
+                }
+              ]
+            }
+          ])JSON"),
+                              vfs,
+                              sound_manager);
+
+    ASSERT_NE(scene, nullptr);
+    ASSERT_NE(scene->runtime, nullptr);
+    auto* text = FindRootChild(*scene, "caption");
+    ASSERT_NE(text, nullptr);
+    ASSERT_NE(text->Mesh(), nullptr);
+    ASSERT_FALSE(text->Camera().empty());
+    auto camera = scene->cameras.at(text->Camera());
+    ASSERT_TRUE(camera->HasImgEffect());
+    const auto effect_layer = camera->GetImgEffect();
+    ASSERT_NE(effect_layer, nullptr);
+
+    const auto state = scene->runtime->NodeTextState("caption");
+    ASSERT_TRUE(state.has_value());
+    ASSERT_GT(state->raster_size.x(), 4096.0f);
+    EXPECT_LE(camera->Width(), 4096.0);
+    EXPECT_LE(camera->Height(), 4096.0);
+
+    auto* pingpong = scene->FindRenderTarget(effect_layer->FirstTarget());
+    ASSERT_NE(pingpong, nullptr);
+    EXPECT_LE(pingpong->width, 4096);
+    EXPECT_LE(pingpong->height, 4096);
+    auto* fbo = scene->FindRenderTarget(effect_layer->GetEffect(0)->nodes.front().output);
+    ASSERT_NE(fbo, nullptr);
+
+    const auto text_mesh_size = MeshSize(*text->Mesh());
+    EXPECT_GT(text_mesh_size.x(), static_cast<float>(pingpong->width));
+    const auto final_mesh_size = MeshSize(effect_layer->FinalMesh());
+    ExpectTextEffectFboCoversFinalMesh(*fbo,
+                                       effect_layer->FinalMesh(),
+                                       pingpong->width,
+                                       pingpong->height);
+    EXPECT_NEAR(final_mesh_size.x(), static_cast<float>(pingpong->width), 1.0f);
+    EXPECT_LE(final_mesh_size.y(), static_cast<float>(pingpong->height));
+    const auto uv_bounds = MeshTexCoordBounds(effect_layer->FinalMesh());
+    EXPECT_FLOAT_EQ(uv_bounds.min_u, 0.0f);
+    EXPECT_FLOAT_EQ(uv_bounds.max_u, 1.0f);
+    EXPECT_GE(uv_bounds.min_v, 0.0f);
+    EXPECT_LE(uv_bounds.max_v, 1.0f);
+
+    auto graph = sceneToRenderGraph(*scene);
+    ASSERT_NE(graph, nullptr);
+    auto* resolved_final = effect_layer->ResolvedFinalRenderNode();
+    ASSERT_NE(resolved_final, nullptr);
+    ASSERT_NE(resolved_final->Mesh(), nullptr);
+    const auto resolved_final_size = MeshSize(*resolved_final->Mesh());
+    EXPECT_NEAR(resolved_final_size.x(), static_cast<float>(pingpong->width), 1.0f);
+    const auto resolved_uv_bounds = MeshTexCoordBounds(*resolved_final->Mesh());
+    EXPECT_FLOAT_EQ(resolved_uv_bounds.min_u, 0.0f);
+    EXPECT_FLOAT_EQ(resolved_uv_bounds.max_u, 1.0f);
+    EXPECT_GE(resolved_uv_bounds.min_v, 0.0f);
+    EXPECT_LE(resolved_uv_bounds.max_v, 1.0f);
+    EXPECT_FALSE(scene->runtime->ConsumeSceneGraphMutationFlag());
+}
+
+TEST(TextObjectRuntime, SceneScriptTextEffectMutationKeepsFinalUvsInCapacity) {
+    fs::VFS vfs;
+    MountAssets(vfs,
+                {
+                    { "/effects/gradient/effect.json",
+                      R"JSON({
+                        "name": "gradient",
+                        "version": 1,
+                        "passes": [
+                          { "material": "materials/effects/gradient.json" }
+                        ]
+                      })JSON" },
+                    { "/materials/effects/gradient.json",
+                      R"JSON({
+                        "passes": [{
+                          "shader": "effects/gradient",
+                          "textures": [null]
+                        }]
+                      })JSON" },
+                    { "/shaders/effects/gradient.vert",
+                      "layout(binding = 1) uniform mat4 g_ModelViewProjectionMatrix;\n"
+                      "in vec3 a_Position;\n"
+                      "in vec2 a_TexCoord;\n"
+                      "out vec2 v_TexCoord;\n"
+                      "void main() { gl_Position = g_ModelViewProjectionMatrix * vec4(a_Position, 1.0); v_TexCoord = a_TexCoord; }\n" },
+                    { "/shaders/effects/gradient.frag",
+                      "uniform sampler2D g_Texture0;\n"
+                      "in vec2 v_TexCoord;\n"
+                      "void main() { gl_FragColor = texture(g_Texture0, v_TexCoord); }\n" },
+                });
+    audio::SoundManager sound_manager;
+    WPSceneParser       parser;
+    ProjectProperties   properties;
+    SceneParseRequest   request {
+          .scene_id           = "text-effect-script-mutation",
+          .project_properties = &properties,
+    };
+
+    auto scene = parser.Parse(request,
+                              MinimalSceneObjects(R"JSON([
+            {
+              "id": 1,
+              "name": "caption",
+              "text": {
+                "text": "a",
+                "script": "engine.on('cursorDown', function() { thisLayer.text = 'a much longer caption for effects'; })"
+              },
+              "font": "Arial",
+              "pointsize": 20,
+              "padding": 0,
+              "origin": "0 0 0",
+              "visible": true,
+              "effects": [
+                {
+                  "file": "effects/gradient/effect.json",
+                  "id": 2,
+                  "visible": true
+                }
+              ]
+            }
+          ])JSON"),
+                              vfs,
+                              sound_manager);
+
+    ASSERT_NE(scene, nullptr);
+    ASSERT_NE(scene->runtime, nullptr);
+    auto* text = FindRootChild(*scene, "caption");
+    ASSERT_NE(text, nullptr);
+    ASSERT_FALSE(text->Camera().empty());
+    auto camera = scene->cameras.at(text->Camera());
+    ASSERT_TRUE(camera->HasImgEffect());
+    const auto effect_layer = camera->GetImgEffect();
+    ASSERT_NE(effect_layer, nullptr);
+
+    scene->runtime->DispatchCursorDown();
+    PumpTextUntilClean(*scene->runtime);
+
+    EXPECT_EQ(scene->runtime->NodeText("caption"), "a much longer caption for effects");
+    const auto uv_bounds = MeshTexCoordBounds(effect_layer->FinalMesh());
+    EXPECT_GE(uv_bounds.min_u, 0.0f);
+    EXPECT_LE(uv_bounds.max_u, 1.0f);
+    EXPECT_GE(uv_bounds.min_v, 0.0f);
+    EXPECT_LE(uv_bounds.max_v, 1.0f);
+    EXPECT_FALSE(scene->runtime->ConsumeSceneGraphMutationFlag());
+    EXPECT_EQ(scene->runtime->scriptErrorCount(), 0u);
+}
+
+TEST(TextObjectRuntime, ExplicitAlignedTextEffectTracksMeasuredRenderFrameWhenRasterExpands) {
+    fs::VFS vfs;
+    MountAssets(vfs,
+                {
+                    { "/effects/gradient/effect.json",
+                      R"JSON({
+                        "name": "gradient",
+                        "version": 1,
+                        "fbos": [
+                          { "name": "_rt_BlurBuffer", "scale": 2 }
+                        ],
+                        "passes": [
+                          {
+                            "material": "materials/effects/gradient.json",
+                            "bind": [
+                              { "name": "previous", "index": 0 }
+                            ],
+                            "target": "_rt_BlurBuffer"
+                          },
+                          {
+                            "material": "materials/effects/gradient.json",
+                            "bind": [
+                              { "name": "_rt_BlurBuffer", "index": 0 }
+                            ]
+                          }
+                        ]
+                      })JSON" },
+                    { "/materials/effects/gradient.json",
+                      R"JSON({
+                        "passes": [{
+                          "shader": "effects/gradient",
+                          "textures": [null]
+                        }]
+                      })JSON" },
+                    { "/shaders/effects/gradient.vert",
+                      "layout(binding = 1) uniform mat4 g_ModelViewProjectionMatrix;\n"
+                      "in vec3 a_Position;\n"
+                      "in vec2 a_TexCoord;\n"
+                      "out vec2 v_TexCoord;\n"
+                      "void main() { gl_Position = g_ModelViewProjectionMatrix * vec4(a_Position, 1.0); v_TexCoord = a_TexCoord; }\n" },
+                    { "/shaders/effects/gradient.frag",
+                      "uniform sampler2D g_Texture0;\n"
+                      "in vec2 v_TexCoord;\n"
+                      "void main() { gl_FragColor = texture(g_Texture0, v_TexCoord); }\n" },
+                });
+    audio::SoundManager sound_manager;
+    WPSceneParser       parser;
+    ProjectProperties   properties;
+    SceneParseRequest   request {
+          .scene_id           = "explicit-text-effect-raster-camera",
+          .project_properties = &properties,
+    };
+
+    auto scene = parser.Parse(request,
+                              MinimalSceneObjects(R"JSON([
+            {
+              "id": 1,
+              "name": "caption",
+              "text": {
+                "value": "a",
+                "script": "export function update(value) { return 'a much longer caption for explicit effects'; }"
+              },
+              "font": "Arial",
+              "pointsize": 20,
+              "padding": 0,
+              "origin": "0 0 0",
+              "size": [120, 50],
+              "horizontalalign": "right",
+              "verticalalign": "bottom",
+              "visible": true,
+              "effects": [
+                {
+                  "file": "effects/gradient/effect.json",
+                  "id": 2,
+                  "visible": true
+                }
+              ]
+            }
+          ])JSON"),
+                              vfs,
+                              sound_manager);
+
+    ASSERT_NE(scene, nullptr);
+    ASSERT_NE(scene->runtime, nullptr);
+    auto* text = FindRootChild(*scene, "caption");
+    ASSERT_NE(text, nullptr);
+    ASSERT_NE(text->Mesh(), nullptr);
+    ASSERT_FALSE(text->Camera().empty());
+    auto camera = scene->cameras.at(text->Camera());
+    ASSERT_TRUE(camera->HasImgEffect());
+    const auto effect_layer = camera->GetImgEffect();
+    ASSERT_NE(effect_layer, nullptr);
+
+    EXPECT_EQ(scene->runtime->NodeText("caption"),
+              "a much longer caption for explicit effects");
+    EXPECT_NEAR(text->Translate().x(), -60.0f, 1.0e-4f);
+    EXPECT_NEAR(text->Translate().y(), 25.0f, 1.0e-4f);
+    EXPECT_NEAR(text->Translate().x(), -60.0f, 1.0e-4f);
+    EXPECT_NEAR(text->Translate().y(), 25.0f, 1.0e-4f);
+
+    const auto state = scene->runtime->NodeTextState("caption");
+    ASSERT_TRUE(state.has_value());
+    const auto logical_size = scene->runtime->NodeSize("caption");
+    EXPECT_FLOAT_EQ(logical_size.x(), 120.0f);
+    EXPECT_FLOAT_EQ(logical_size.y(), 50.0f);
+    EXPECT_GT(state->raster_size.x(), logical_size.x());
+    const auto render_frame = TextLayerRenderFrameForRasterSize(*state, state->raster_size);
+
+    const auto text_mesh_size = MeshSize(*text->Mesh());
+    EXPECT_NEAR(text_mesh_size.x(), render_frame.size.x(), 1.0f);
+    EXPECT_NEAR(text_mesh_size.y(), render_frame.size.y(), 1.0f);
+    const auto text_mesh_center = MeshCenter(*text->Mesh());
+    EXPECT_NEAR(text_mesh_center.x(), render_frame.center.x(), 1.0e-4f);
+    EXPECT_NEAR(text_mesh_center.y(), render_frame.center.y(), 1.0e-4f);
+
+    auto* pingpong = scene->FindRenderTarget(effect_layer->FirstTarget());
+    ASSERT_NE(pingpong, nullptr);
+    auto* fbo = scene->FindRenderTarget(effect_layer->GetEffect(0)->nodes.front().output);
+    ASSERT_NE(fbo, nullptr);
+    EXPECT_GE(pingpong->width, static_cast<int32_t>(std::lround(render_frame.size.x())));
+    EXPECT_GE(pingpong->height, static_cast<int32_t>(std::lround(render_frame.size.y())));
+    EXPECT_EQ(static_cast<int32_t>(std::lround(camera->Width())), pingpong->width);
+    EXPECT_EQ(static_cast<int32_t>(std::lround(camera->Height())), pingpong->height);
+
+    const auto final_mesh_size = MeshSize(effect_layer->FinalMesh());
+    ExpectTextEffectFboCoversFinalMesh(*fbo,
+                                       effect_layer->FinalMesh(),
+                                       pingpong->width,
+                                       pingpong->height);
+    EXPECT_NEAR(final_mesh_size.x(), render_frame.size.x(), 1.0f);
+    EXPECT_NEAR(final_mesh_size.y(), render_frame.size.y(), 1.0f);
+    const auto final_mesh_center = MeshCenter(effect_layer->FinalMesh());
+    EXPECT_NEAR(final_mesh_center.x(), render_frame.center.x(), 1.0e-4f);
+    EXPECT_NEAR(final_mesh_center.y(), render_frame.center.y(), 1.0e-4f);
+    const auto uv_bounds = MeshTexCoordBounds(effect_layer->FinalMesh());
+    EXPECT_GE(uv_bounds.min_u, 0.0f);
+    EXPECT_LE(uv_bounds.max_u, 1.0f);
+    EXPECT_GE(uv_bounds.min_v, 0.0f);
+    EXPECT_LE(uv_bounds.max_v, 1.0f);
+
+    auto graph = sceneToRenderGraph(*scene);
+    ASSERT_NE(graph, nullptr);
+    auto* resolved_final = effect_layer->ResolvedFinalRenderNode();
+    ASSERT_NE(resolved_final, nullptr);
+    ASSERT_NE(resolved_final->Mesh(), nullptr);
+    const auto resolved_final_mesh_size = MeshSize(*resolved_final->Mesh());
+    EXPECT_NEAR(resolved_final_mesh_size.x(), render_frame.size.x(), 1.0f);
+    EXPECT_NEAR(resolved_final_mesh_size.y(), render_frame.size.y(), 1.0f);
+    const auto resolved_final_mesh_center = MeshCenter(*resolved_final->Mesh());
+    EXPECT_NEAR(resolved_final_mesh_center.x(), render_frame.center.x(), 1.0e-4f);
+    EXPECT_NEAR(resolved_final_mesh_center.y(), render_frame.center.y(), 1.0e-4f);
+
+    EXPECT_FALSE(scene->runtime->ConsumeSceneGraphMutationFlag());
+    PumpTextUntilClean(*scene->runtime);
+    EXPECT_FALSE(scene->runtime->ConsumeSceneGraphMutationFlag());
+}
+
+TEST(TextObjectRuntime, ExplicitAlignedTextEffectCoversMeasuredRasterWithoutScaling) {
+    fs::VFS vfs;
+    MountAssets(vfs,
+                {
+                    { "/effects/gradient/effect.json",
+                      R"JSON({
+                        "name": "gradient",
+                        "version": 1,
+                        "fbos": [
+                          { "name": "_rt_BlurBuffer", "scale": 2 }
+                        ],
+                        "passes": [
+                          {
+                            "material": "materials/effects/gradient.json",
+                            "bind": [
+                              { "name": "previous", "index": 0 }
+                            ],
+                            "target": "_rt_BlurBuffer"
+                          },
+                          {
+                            "material": "materials/effects/gradient.json",
+                            "bind": [
+                              { "name": "_rt_BlurBuffer", "index": 0 }
+                            ]
+                          }
+                        ]
+                      })JSON" },
+                    { "/materials/effects/gradient.json",
+                      R"JSON({
+                        "passes": [{
+                          "shader": "effects/gradient",
+                          "textures": [null]
+                        }]
+                      })JSON" },
+                    { "/shaders/effects/gradient.vert",
+                      "layout(binding = 1) uniform mat4 g_ModelViewProjectionMatrix;\n"
+                      "in vec3 a_Position;\n"
+                      "in vec2 a_TexCoord;\n"
+                      "out vec2 v_TexCoord;\n"
+                      "void main() { gl_Position = g_ModelViewProjectionMatrix * vec4(a_Position, 1.0); v_TexCoord = a_TexCoord; }\n" },
+                    { "/shaders/effects/gradient.frag",
+                      "uniform sampler2D g_Texture0;\n"
+                      "in vec2 v_TexCoord;\n"
+                      "void main() { gl_FragColor = texture(g_Texture0, v_TexCoord); }\n" },
+                });
+    audio::SoundManager sound_manager;
+    WPSceneParser       parser;
+    ProjectProperties   properties;
+    SceneParseRequest   request {
+          .scene_id           = "explicit-text-effect-measured-raster",
+          .project_properties = &properties,
+    };
+
+    auto scene = parser.Parse(request,
+                              MinimalSceneObjects(R"JSON([
+            {
+              "id": 1,
+              "name": "caption",
+              "text": "Saturday Saturday Saturday",
+              "font": "Arial",
+              "pointsize": 20,
+              "padding": 0,
+              "origin": "0 0 0",
+              "size": [120, 50],
+              "horizontalalign": "right",
+              "verticalalign": "bottom",
+              "visible": true,
+              "effects": [
+                {
+                  "file": "effects/gradient/effect.json",
+                  "id": 2,
+                  "visible": true
+                }
+              ]
+            }
+          ])JSON"),
+                              vfs,
+                              sound_manager);
+
+    ASSERT_NE(scene, nullptr);
+    ASSERT_NE(scene->runtime, nullptr);
+    auto* text = FindRootChild(*scene, "caption");
+    ASSERT_NE(text, nullptr);
+    ASSERT_NE(text->Mesh(), nullptr);
+    ASSERT_FALSE(text->Camera().empty());
+    auto camera = scene->cameras.at(text->Camera());
+    ASSERT_TRUE(camera->HasImgEffect());
+    const auto effect_layer = camera->GetImgEffect();
+    ASSERT_NE(effect_layer, nullptr);
+
+    const auto state = scene->runtime->NodeTextState("caption");
+    ASSERT_TRUE(state.has_value());
+    const auto logical_size = scene->runtime->NodeSize("caption");
+    EXPECT_FLOAT_EQ(logical_size.x(), 120.0f);
+    EXPECT_FLOAT_EQ(logical_size.y(), 50.0f);
+    ASSERT_GT(state->raster_size.x(), logical_size.x());
+
+    const auto text_mesh_size = MeshSize(*text->Mesh());
+    EXPECT_NEAR(text_mesh_size.x(), state->raster_size.x(), 1.0f);
+    EXPECT_NEAR(text_mesh_size.y(), state->raster_size.y(), 1.0f);
+    const auto text_mesh_center = MeshCenter(*text->Mesh());
+    EXPECT_LT(text_mesh_center.x(), 0.0f);
+    EXPECT_GT(text_mesh_center.y(), 0.0f);
+
+    auto* pingpong = scene->FindRenderTarget(effect_layer->FirstTarget());
+    ASSERT_NE(pingpong, nullptr);
+    auto* fbo = scene->FindRenderTarget(effect_layer->GetEffect(0)->nodes.front().output);
+    ASSERT_NE(fbo, nullptr);
+    EXPECT_GE(pingpong->width, static_cast<int32_t>(std::ceil(state->raster_size.x())));
+    EXPECT_GE(pingpong->height, static_cast<int32_t>(std::ceil(state->raster_size.y())));
+    EXPECT_EQ(static_cast<int32_t>(std::lround(camera->Width())), pingpong->width);
+    EXPECT_EQ(static_cast<int32_t>(std::lround(camera->Height())), pingpong->height);
+    EXPECT_NEAR(camera->GetPosition().x(), text_mesh_center.x(), 1.0e-4);
+    EXPECT_NEAR(camera->GetPosition().y(), text_mesh_center.y(), 1.0e-4);
+
+    const auto final_mesh_size = MeshSize(effect_layer->FinalMesh());
+    ExpectTextEffectFboCoversFinalMesh(*fbo,
+                                       effect_layer->FinalMesh(),
+                                       pingpong->width,
+                                       pingpong->height);
+    EXPECT_NEAR(final_mesh_size.x(), state->raster_size.x(), 1.0f);
+    EXPECT_NEAR(final_mesh_size.y(), state->raster_size.y(), 1.0f);
+    EXPECT_NEAR(MeshCenter(effect_layer->FinalMesh()).x(), text_mesh_center.x(), 1.0e-4f);
+    EXPECT_NEAR(MeshCenter(effect_layer->FinalMesh()).y(), text_mesh_center.y(), 1.0e-4f);
+
+    auto graph = sceneToRenderGraph(*scene);
+    ASSERT_NE(graph, nullptr);
+    auto* resolved_final = effect_layer->ResolvedFinalRenderNode();
+    ASSERT_NE(resolved_final, nullptr);
+    ASSERT_NE(resolved_final->Mesh(), nullptr);
+    const auto resolved_final_mesh_size = MeshSize(*resolved_final->Mesh());
+    EXPECT_NEAR(resolved_final_mesh_size.x(), state->raster_size.x(), 1.0f);
+    EXPECT_NEAR(resolved_final_mesh_size.y(), state->raster_size.y(), 1.0f);
+    EXPECT_NEAR(MeshCenter(*resolved_final->Mesh()).x(), text_mesh_center.x(), 1.0e-4f);
+    EXPECT_NEAR(MeshCenter(*resolved_final->Mesh()).y(), text_mesh_center.y(), 1.0e-4f);
+
+    EXPECT_NEAR(text->Translate().x(), -60.0f, 1.0e-4f);
+    EXPECT_NEAR(text->Translate().y(), 25.0f, 1.0e-4f);
 }
 
 TEST(TextObjectRuntime, ParserStabilizesCascadingRustShaderDefaultTextureMetadata) {
@@ -1652,11 +2458,13 @@ TEST(TextObjectRuntime, TextFieldScriptUpdatesRuntimeTextOnTick) {
 
     ASSERT_NE(scene, nullptr);
     ASSERT_NE(scene->runtime, nullptr);
-    EXPECT_EQ(scene->runtime->NodeText("caption"), "before");
+    EXPECT_EQ(scene->runtime->NodeText("caption"), "before after");
+    EXPECT_FALSE(scene->runtime->NodeTextDirty("caption"));
 
     scene->runtime->Tick(1.0 / 60.0);
 
     EXPECT_EQ(scene->runtime->NodeText("caption"), "before after");
+    EXPECT_FALSE(scene->runtime->NodeTextDirty("caption"));
     EXPECT_EQ(scene->runtime->scriptErrorCount(), 0u);
 }
 
@@ -1965,16 +2773,16 @@ TEST(TextObjectRuntime, ClockScriptUpdatesSameSizeTextOnceThenSkipsMeasurements)
     ASSERT_NE(scene->runtime, nullptr);
     auto* runtime = scene->runtime.get();
 
-    EXPECT_EQ(runtime->NodeText("Clock"), "06:15");
+    EXPECT_EQ(runtime->NodeText("Clock"), "12:34");
     runtime->ClearNodeTextDirty("Clock");
     ASSERT_FALSE(runtime->NodeTextDirty("Clock"));
 
     runtime->Tick(1.0 / 60.0);
     EXPECT_EQ(runtime->NodeText("Clock"), "12:34");
-    EXPECT_TRUE(runtime->NodeTextDirty("Clock"));
     const auto changed_state = runtime->NodeTextState("Clock");
     ASSERT_TRUE(changed_state.has_value());
-    EXPECT_TRUE(changed_state->cache_dirty);
+    EXPECT_FALSE(runtime->NodeTextDirty("Clock"));
+    EXPECT_FALSE(changed_state->cache_dirty);
 
     runtime->ClearNodeTextDirty("Clock");
     ASSERT_FALSE(runtime->NodeTextDirty("Clock"));
@@ -2026,16 +2834,17 @@ TEST(TextObjectRuntime, ClockScriptTextResizeDoesNotMutateSceneGraph) {
     ASSERT_TRUE(clock->Mesh()->Dynamic());
     ASSERT_FALSE(runtime->ConsumeSceneGraphMutationFlag());
 
+    EXPECT_EQ(runtime->NodeText("Clock"), "888888888888");
+    EXPECT_FALSE(runtime->NodeTextDirty("Clock"));
     const auto before_size      = runtime->NodeSize("Clock");
     const auto before_mesh_size = MeshSize(*clock->Mesh());
 
     runtime->Tick(1.0 / 60.0);
 
     EXPECT_EQ(runtime->NodeText("Clock"), "888888888888");
-    EXPECT_TRUE(runtime->NodeTextDirty("Clock"));
-    PumpTextUntilClean(*runtime);
-    EXPECT_GT(runtime->NodeSize("Clock").x(), before_size.x());
-    EXPECT_GT(MeshSize(*clock->Mesh()).x(), before_mesh_size.x());
+    EXPECT_FALSE(runtime->NodeTextDirty("Clock"));
+    EXPECT_FLOAT_EQ(runtime->NodeSize("Clock").x(), before_size.x());
+    EXPECT_FLOAT_EQ(MeshSize(*clock->Mesh()).x(), before_mesh_size.x());
     EXPECT_FALSE(runtime->ConsumeSceneGraphMutationFlag());
     EXPECT_EQ(runtime->scriptErrorCount(), 0u);
 }

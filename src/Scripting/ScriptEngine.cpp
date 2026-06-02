@@ -228,9 +228,25 @@ constexpr char kVectorBootstrap[] = R"JS(
     return Vector;
   }
 
-  if (typeof globalThis.Vec2 !== 'function') globalThis.Vec2 = __defineVector('Vec2', ['x', 'y']);
-  if (typeof globalThis.Vec3 !== 'function') globalThis.Vec3 = __defineVector('Vec3', ['x', 'y', 'z']);
-  if (typeof globalThis.Vec4 !== 'function') globalThis.Vec4 = __defineVector('Vec4', ['x', 'y', 'z', 'w']);
+  Object.defineProperty(globalThis, '__WEVec2', {
+    value: __defineVector('Vec2', ['x', 'y']),
+    configurable: false,
+    writable: false
+  });
+  Object.defineProperty(globalThis, '__WEVec3', {
+    value: __defineVector('Vec3', ['x', 'y', 'z']),
+    configurable: false,
+    writable: false
+  });
+  Object.defineProperty(globalThis, '__WEVec4', {
+    value: __defineVector('Vec4', ['x', 'y', 'z', 'w']),
+    configurable: false,
+    writable: false
+  });
+
+  if (typeof globalThis.Vec2 !== 'function') globalThis.Vec2 = globalThis.__WEVec2;
+  if (typeof globalThis.Vec3 !== 'function') globalThis.Vec3 = globalThis.__WEVec3;
+  if (typeof globalThis.Vec4 !== 'function') globalThis.Vec4 = globalThis.__WEVec4;
 })();
 )JS";
 
@@ -307,17 +323,17 @@ JSValue CreateJsVectorObject(JSContext* context, const char* constructor_name, i
 
 JSValue CreateJsVec2(JSContext* context, double x, double y) {
     const double values[] = { x, y };
-    return CreateJsVectorObject(context, "Vec2", 2, values);
+    return CreateJsVectorObject(context, "__WEVec2", 2, values);
 }
 
 JSValue CreateJsVec3(JSContext* context, double x, double y, double z) {
     const double values[] = { x, y, z };
-    return CreateJsVectorObject(context, "Vec3", 3, values);
+    return CreateJsVectorObject(context, "__WEVec3", 3, values);
 }
 
 JSValue CreateJsVec4(JSContext* context, double x, double y, double z, double w) {
     const double values[] = { x, y, z, w };
-    return CreateJsVectorObject(context, "Vec4", 4, values);
+    return CreateJsVectorObject(context, "__WEVec4", 4, values);
 }
 
 JSValue DynamicValueToJS(JSContext* context, const DynamicValue& value) {

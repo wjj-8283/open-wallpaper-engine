@@ -45,6 +45,7 @@ public:
     SceneMesh&  FinalMesh() const { return *m_final_mesh; }
     SceneNode&  FinalNode() const { return *m_final_node; }
     SceneNode*  ResolvedFinalRenderNode() const { return m_resolved_final_render_node; }
+    void        SetFinalMeshDynamic(bool dynamic);
     void        SetFinalBlend(BlendMode m) { m_final_blend = m; }
 
     void ResolveEffect(const SceneMesh& defualt_mesh, std::string_view effect_cam);

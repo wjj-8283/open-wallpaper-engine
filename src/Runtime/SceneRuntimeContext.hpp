@@ -46,6 +46,7 @@ struct RuntimePreparedTextLayerImage {
     TextLayerState  state;
     Eigen::Vector2f layout_size { Eigen::Vector2f::Zero() };
     Eigen::Vector2f raster_size { Eigen::Vector2f::Zero() };
+    TextLayerRenderFrame render_frame {};
     uint32_t        width { 0 };
     uint32_t        height { 0 };
     std::vector<uint8_t> rgba;
@@ -100,13 +101,16 @@ public:
     void RegisterNodeRotation(std::string name, SceneNode* node,
                               std::unique_ptr<DynamicValue> value);
     void RegisterTextLayer(std::string name, TextLayerState state);
-    void RegisterTextValue(std::string name, std::unique_ptr<DynamicValue> value);
+    void PrimeTextValue(DynamicValue& value);
+    void RegisterTextValue(std::string name, std::unique_ptr<DynamicValue> value,
+                           bool apply_current_value = true);
     void RegisterMaterialConstant(SceneMaterial* material, std::string name,
                                   std::unique_ptr<DynamicValue> value);
     void RegisterSceneClearColor(std::unique_ptr<DynamicValue> value);
     void RegisterDynamicValueListener(std::unique_ptr<DynamicValue> value,
                                       std::function<void(const DynamicValue&)> callback);
-    void RegisterNodeEffectFinal(std::string name, SceneNode* node, SceneImageEffectLayer* layer);
+    void RegisterNodeEffectFinal(std::string name, SceneNode* node, SceneImageEffectLayer* layer,
+                                 TextLayerRenderFrame target_frame = {});
     void RegisterMaterialAlphaAnimation(SceneMaterial* material, ScalarAnimation animation);
     void RegisterSceneScript(std::string script_source, std::string layer_name);
     void RegisterNodeVideoTexture(std::string name, std::string texture_key);
@@ -194,6 +198,7 @@ private:
     struct NodeEffectFinalBinding {
         SceneNode*             node { nullptr };
         SceneImageEffectLayer* layer { nullptr };
+        TextLayerRenderFrame   target_frame {};
     };
     struct MaterialAlphaBinding {
         SceneMaterial*  material { nullptr };

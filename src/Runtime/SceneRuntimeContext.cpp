@@ -68,6 +68,7 @@ RuntimePreparedTextLayerImage PrepareTextLayerImage(std::string name, uint64_t r
         std::clamp(static_cast<uint32_t>(std::ceil(std::max(1.0f, raster_size.x()))), 1u, 4096u);
     const uint32_t height =
         std::clamp(static_cast<uint32_t>(std::ceil(std::max(1.0f, raster_size.y()))), 1u, 4096u);
+    const auto render_frame = TextLayerRenderFrameForRasterSize(state, raster_size);
     std::vector<uint8_t> rgba(static_cast<std::size_t>(width) * height * 4u, 0u);
     RasterizeTextLayer(state, width, height, rgba);
 
@@ -77,6 +78,7 @@ RuntimePreparedTextLayerImage PrepareTextLayerImage(std::string name, uint64_t r
         .state       = std::move(state),
         .layout_size = layout_size,
         .raster_size = raster_size,
+        .render_frame = render_frame,
         .width       = width,
         .height      = height,
         .rgba        = std::move(rgba),
@@ -124,6 +126,35 @@ void ResizeCardMesh(SceneMesh& mesh, TextLayerRenderBounds bounds) {
     };
     constexpr std::array tex_coord {
         0.0f, 1.0f, 0.0f, 0.0f, 1.0f, 1.0f, 1.0f, 0.0f,
+    };
+
+    SceneVertexArray vertices(
+        {
+            { WE_IN_POSITION.data(), VertexType::FLOAT3 },
+            { WE_IN_TEXCOORD.data(), VertexType::FLOAT2 },
+        },
+        4);
+    vertices.SetVertex(WE_IN_POSITION, pos);
+    vertices.SetVertex(WE_IN_TEXCOORD, tex_coord);
+    replacement.AddVertexArray(std::move(vertices));
+
+    mesh.ChangeMeshDataFrom(replacement);
+    mesh.SetDirty();
+}
+
+void ResizeCardMesh(SceneMesh& mesh, TextLayerRenderBounds bounds, TextLayerTextureBounds texture) {
+    if (bounds.right <= bounds.left || bounds.top <= bounds.bottom) return;
+
+    SceneMesh replacement(mesh.Dynamic());
+    constexpr float z = 0.0f;
+
+    const std::array pos {
+        bounds.left,  bounds.bottom, z, bounds.left, bounds.top, z,
+        bounds.right, bounds.bottom, z, bounds.right, bounds.top, z,
+    };
+    const std::array tex_coord {
+        texture.left, texture.bottom, texture.left, texture.top,
+        texture.right, texture.bottom, texture.right, texture.top,
     };
 
     SceneVertexArray vertices(
@@ -575,6 +606,7 @@ void SceneRuntimeContext::EnqueueTextLayerPreparation(std::string name, const Te
             .revision = state.cache_revision,
             .state    = state,
         });
+        m_pending_text_jobs.back().state.raster_size = layer.rasterSize();
         m_queued_text_revisions[name] = state.cache_revision;
     }
     m_text_worker_cv.notify_one();
@@ -630,7 +662,12 @@ bool SceneRuntimeContext::ApplyPreparedTextLayer(const RuntimePreparedTextLayerI
     auto& layer = iterator->second;
     if (layer.state().cache_revision != prepared.revision) return false;
     if (layer.text() != prepared.state.text) return false;
-    if (! SizeNearlyEqual(layer.rasterSize(), prepared.raster_size, 1.0e-3f)) {
+    const bool raster_size_changed =
+        ! SizeNearlyEqual(layer.rasterSize(), prepared.raster_size, 1.0e-3f);
+    const bool layout_size_changed =
+        ! SizeNearlyEqual(layer.size(), prepared.layout_size, 1.0e-3f);
+
+    if (raster_size_changed) {
         const auto node_iterator = m_nodes.find(prepared.name);
         if (node_iterator != m_nodes.end() && node_iterator->second != nullptr &&
             node_iterator->second->Mesh() != nullptr) {
@@ -640,6 +677,27 @@ bool SceneRuntimeContext::ApplyPreparedTextLayer(const RuntimePreparedTextLayerI
                     *mesh,
                     TextLayerRenderBoundsForRasterSize(prepared.state, prepared.raster_size));
                 if (! mesh->Dynamic()) m_scene_graph_mutated = true;
+            }
+        }
+    }
+
+    if (raster_size_changed || layout_size_changed) {
+        if (const auto effect_iterator = m_node_effect_final.find(prepared.name);
+            effect_iterator != m_node_effect_final.end() &&
+            effect_iterator->second.node != nullptr &&
+            effect_iterator->second.node->Mesh() != nullptr &&
+            effect_iterator->second.layer != nullptr) {
+            const auto& target_frame = effect_iterator->second.target_frame;
+            const auto  final_frame =
+                TextLayerRenderFrameClampedToTarget(prepared.render_frame, target_frame);
+            const auto texture_bounds = TextLayerTextureBoundsForRenderTarget(
+                final_frame, target_frame.size, target_frame.center);
+            ResizeCardMesh(
+                effect_iterator->second.layer->FinalMesh(), final_frame.bounds, texture_bounds);
+            if (auto* resolved =
+                    effect_iterator->second.layer->ResolvedFinalRenderNode();
+                resolved != nullptr && resolved->Mesh() != nullptr) {
+                ResizeCardMesh(*resolved->Mesh(), final_frame.bounds, texture_bounds);
             }
         }
     }
@@ -883,9 +941,17 @@ void SceneRuntimeContext::RegisterTextLayer(std::string name, TextLayerState sta
     m_text_layers.insert_or_assign(std::move(name), std::move(layer));
 }
 
-void SceneRuntimeContext::RegisterTextValue(std::string name, std::unique_ptr<DynamicValue> value) {
+void SceneRuntimeContext::PrimeTextValue(DynamicValue& value) {
+    if (auto* scripted = dynamic_cast<ScriptedDynamicValue*>(&value); scripted != nullptr) {
+        scripted->reevaluate();
+    }
+}
+
+void SceneRuntimeContext::RegisterTextValue(std::string name,
+                                            std::unique_ptr<DynamicValue> value,
+                                            bool apply_current_value) {
     if (name.empty() || value == nullptr) return;
-    SetNodeText(name, value->toString());
+    if (apply_current_value) SetNodeText(name, value->toString());
     auto* raw = value.get();
     m_owned_values.push_back(std::move(value));
     m_text_values.push_back(TextValueBinding {
@@ -933,13 +999,19 @@ void SceneRuntimeContext::RegisterDynamicValueListener(
     });
 }
 
-void SceneRuntimeContext::RegisterNodeEffectFinal(std::string name, SceneNode* node,
-                                                  SceneImageEffectLayer* layer) {
+void SceneRuntimeContext::RegisterNodeEffectFinal(std::string name,
+                                                  SceneNode* node,
+                                                  SceneImageEffectLayer* layer,
+                                                  TextLayerRenderFrame target_frame) {
     if (node == nullptr || layer == nullptr) return;
-    RegisterNode(name, node);
+    if (const auto iterator = m_nodes.find(name);
+        iterator == m_nodes.end() || iterator->second != node) {
+        RegisterNode(name, node);
+    }
     m_node_effect_final[std::move(name)] = NodeEffectFinalBinding {
-        .node  = node,
-        .layer = layer,
+        .node         = node,
+        .layer        = layer,
+        .target_frame = target_frame,
     };
 }
 

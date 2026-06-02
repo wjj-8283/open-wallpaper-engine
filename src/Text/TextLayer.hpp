@@ -86,6 +86,19 @@ struct TextLayerRenderBounds {
     float top { 0.0f };
 };
 
+struct TextLayerRenderFrame {
+    TextLayerRenderBounds bounds;
+    Eigen::Vector2f       size { Eigen::Vector2f::Zero() };
+    Eigen::Vector2f       center { Eigen::Vector2f::Zero() };
+};
+
+struct TextLayerTextureBounds {
+    float left { 0.0f };
+    float right { 1.0f };
+    float bottom { 1.0f };
+    float top { 0.0f };
+};
+
 class TextLayer {
 public:
     explicit TextLayer(TextLayerState state);
@@ -116,6 +129,18 @@ Eigen::Vector2f TextLayerLayoutSize(const TextLayerState& state);
 Eigen::Vector2f TextLayerRasterSize(const TextLayerState& state);
 TextLayerRenderBounds TextLayerRenderBoundsForRasterSize(const TextLayerState& state,
                                                          Eigen::Vector2f raster_size);
+TextLayerRenderFrame TextLayerRenderFrameForRasterSize(const TextLayerState& state,
+                                                       Eigen::Vector2f raster_size);
+TextLayerRenderFrame TextLayerRenderFrameForCapacity(const TextLayerState& state,
+                                                     Eigen::Vector2f raster_size,
+                                                     Eigen::Vector2f capacity_size);
+TextLayerRenderFrame TextLayerRenderFrameForTargetExtent(const TextLayerRenderFrame& frame,
+                                                         Eigen::Vector2f target_extent);
+TextLayerRenderFrame TextLayerRenderFrameClampedToTarget(const TextLayerRenderFrame& frame,
+                                                         const TextLayerRenderFrame& target);
+TextLayerTextureBounds TextLayerTextureBoundsForRenderTarget(const TextLayerRenderFrame& frame,
+                                                             Eigen::Vector2f target_size,
+                                                             Eigen::Vector2f target_center);
 std::string     TextTextureName(std::string_view layer_key);
 void            RasterizeTextLayer(const TextLayerState& state, uint32_t width, uint32_t height,
                                    std::vector<uint8_t>& rgba);

@@ -8,6 +8,7 @@
 #include "Vulkan/ShaderComp.hpp"
 
 #include <chrono>
+#include <cstdint>
 #include <optional>
 #include <string>
 
@@ -16,6 +17,9 @@ using namespace wallpaper;
 namespace
 {
 ShaderStartupMetrics g_shader_startup_metrics;
+
+constexpr std::string_view kShaderCacheDirectory { "spvs01" };
+constexpr std::string_view kShaderCacheSuffix { "spvs" };
 
 double MeasureElapsedMs(const std::chrono::steady_clock::time_point started)
 {
@@ -32,6 +36,43 @@ std::string RustTextureFormat(TextureFormat format)
     case TextureFormat::RGBA8: return "rgba8";
     default: return "unknown";
     }
+}
+
+std::string GetShaderCachePath(std::string_view scene_id, std::string_view cache_key)
+{
+    return std::string("/cache/") + std::string(scene_id) + "/" +
+           std::string(kShaderCacheDirectory) + "/" + std::string(cache_key) + "." +
+           std::string(kShaderCacheSuffix);
+}
+
+bool WriteBytes(fs::IBinaryStreamW& file, const void* data, usize size)
+{
+    return size == 0 || file.Write(data, size) == 1;
+}
+
+bool WriteUint32LE(fs::IBinaryStreamW& file, uint32_t value)
+{
+    const unsigned char bytes[] {
+        static_cast<unsigned char>(value & 0xffu),
+        static_cast<unsigned char>((value >> 8u) & 0xffu),
+        static_cast<unsigned char>((value >> 16u) & 0xffu),
+        static_cast<unsigned char>((value >> 24u) & 0xffu),
+    };
+    return WriteBytes(file, bytes, sizeof(bytes));
+}
+
+bool SaveShaderCacheFile(std::span<const ShaderCode> codes, fs::IBinaryStreamW& file)
+{
+    char padding[256] {};
+
+    if (! WriteBytes(file, "SPVS0001", 9)) return false;
+    if (! WriteUint32LE(file, static_cast<uint32_t>(codes.size()))) return false;
+    for (const auto& code : codes) {
+        const auto size_bytes = static_cast<uint32_t>(code.size() * sizeof(uint32_t));
+        if (! WriteUint32LE(file, size_bytes)) return false;
+        if (! WriteBytes(file, code.data(), size_bytes)) return false;
+    }
+    return WriteBytes(file, padding, sizeof(padding));
 }
 
 } // namespace
@@ -96,6 +137,17 @@ bool WPShaderParser::CompileToSpvRust(std::string_view scene_id, std::string_vie
     g_shader_startup_metrics.compile_ms += MeasureElapsedMs(compile_started);
 
     codes = std::move(output.codes);
+    const auto cache_write_started = std::chrono::steady_clock::now();
+    if (request.cache_enabled && ! output.cache_key.empty()) {
+        if (auto cache_file = vfs.OpenW(GetShaderCachePath(scene_id, output.cache_key)); cache_file) {
+            if (! SaveShaderCacheFile(codes, *cache_file)) {
+                LOG_ERROR("Rust shader cache write failed for '%s'",
+                          std::string(shader_name).c_str());
+            }
+        }
+    }
+    g_shader_startup_metrics.cache_write_ms += MeasureElapsedMs(cache_write_started);
+
     shader_info->combos.insert(output.shader_info.combos.begin(), output.shader_info.combos.end());
     shader_info->svs.insert(output.shader_info.svs.begin(), output.shader_info.svs.end());
     shader_info->alias.insert(output.shader_info.alias.begin(), output.shader_info.alias.end());

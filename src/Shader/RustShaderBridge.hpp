@@ -58,6 +58,7 @@ struct RustShaderOutput {
     std::string             metadata_json;
     std::string             reflection_json;
     std::string             diagnostics_json;
+    std::string             cache_key;
 };
 
 using RustShaderIncludeReader = std::function<std::optional<std::string>(std::string_view)>;
