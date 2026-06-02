@@ -10,6 +10,7 @@
 #include <vulkan/vulkan.h>
 #include <vulkan/vulkan_metal.h>
 
+#include <algorithm>
 #include <cmath>
 #include <cstdint>
 #include <limits>
@@ -491,6 +492,37 @@ extern "C" int owe_audio_submit_frames(
     std::string error;
     if (!wallpaper::audio::SubmitAudioFrames(sample_rate, frame_count, pcm_frames, &error)) {
         return finish_with_error(error);
+    }
+    return 0;
+}
+
+extern "C" int owe_audio_current_spectrum_128(
+    float* out_bins,
+    uintptr_t out_len,
+    uint64_t* out_generation)
+{
+    clear_last_error();
+    if (out_bins == nullptr) {
+        return finish_with_error("out_bins must not be null");
+    }
+    if (out_len < 128u) {
+        return finish_with_error("out_len must be at least 128");
+    }
+
+    const auto sanitize_audio_bin = [](float value) -> float {
+        if (! std::isfinite(value)) {
+            return 0.0f;
+        }
+        return std::clamp(value, 0.0f, 1.0f);
+    };
+
+    const auto snapshot = wallpaper::audio::CurrentAudioSpectrumSnapshot();
+    for (size_t i = 0; i < 64u; ++i) {
+        out_bins[i]       = sanitize_audio_bin(snapshot.left64[i]);
+        out_bins[i + 64u] = sanitize_audio_bin(snapshot.right64[i]);
+    }
+    if (out_generation != nullptr) {
+        *out_generation = snapshot.generation;
     }
     return 0;
 }

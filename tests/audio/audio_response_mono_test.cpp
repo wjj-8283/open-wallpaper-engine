@@ -9,6 +9,7 @@
 #include <cstdint>
 #include <cmath>
 #include <cstdlib>
+#include <limits>
 #include <new>
 #include <string>
 #include <thread>
@@ -253,6 +254,59 @@ TEST(AudioResponseMonoTest, StaleSnapshotPublishesSilenceInsteadOfReusingOldBins
     EXPECT_EQ(stale_snapshot.right32, stale_snapshot.average32);
     EXPECT_EQ(stale_snapshot.left16, stale_snapshot.average16);
     EXPECT_EQ(stale_snapshot.right16, stale_snapshot.average16);
+}
+
+TEST(AudioResponseMonoTest, NonFiniteSamplesAreTreatedAsSilence) {
+    ResetAudioResponseServiceForTesting();
+
+    std::array<float, 200> samples {};
+    for (std::size_t index = 0; index < samples.size(); ++index) {
+        samples[index] = index % 2u == 0u ? std::numeric_limits<float>::quiet_NaN()
+                                          : std::numeric_limits<float>::infinity();
+    }
+
+    std::string error;
+    for (uint32_t submit = 0; submit < kChunkSubmitCount; ++submit) {
+        ASSERT_TRUE(SubmitMonoAudioFrames(kSubmitSampleRate, static_cast<uint32_t>(samples.size()), samples.data(), &error))
+            << error;
+    }
+
+    const auto snapshot = WaitForGeneration();
+    EXPECT_GT(snapshot.generation, 0u);
+    EXPECT_FALSE(HasNonZeroAverage64Bin(snapshot));
+    EXPECT_EQ(snapshot.left64, snapshot.average64);
+    EXPECT_EQ(snapshot.right64, snapshot.average64);
+}
+
+TEST(AudioResponseMonoTest, ContinuousSilenceAfterSignalClearsSnapshot) {
+    ResetAudioResponseServiceForTesting();
+
+    std::array<float, 200> signal {};
+    for (std::size_t index = 0; index < signal.size(); ++index) {
+        signal[index] = std::sin(static_cast<float>(index) * 0.05f);
+    }
+
+    std::string error;
+    for (uint32_t submit = 0; submit < kChunkSubmitCount; ++submit) {
+        ASSERT_TRUE(SubmitMonoAudioFrames(kSubmitSampleRate, static_cast<uint32_t>(signal.size()), signal.data(), &error))
+            << error;
+    }
+
+    const auto live_snapshot = WaitForGeneration();
+    ASSERT_GT(live_snapshot.generation, 0u);
+    ASSERT_TRUE(HasNonZeroAverage64Bin(live_snapshot));
+
+    std::array<float, 200> silence {};
+    for (uint32_t submit = 0; submit < kChunkSubmitCount; ++submit) {
+        ASSERT_TRUE(SubmitMonoAudioFrames(kSubmitSampleRate, static_cast<uint32_t>(silence.size()), silence.data(), &error))
+            << error;
+    }
+
+    const auto silent_snapshot = WaitForSilentGeneration(live_snapshot.generation);
+    EXPECT_GT(silent_snapshot.generation, live_snapshot.generation);
+    EXPECT_FALSE(HasNonZeroAverage64Bin(silent_snapshot));
+    EXPECT_EQ(silent_snapshot.left64, silent_snapshot.average64);
+    EXPECT_EQ(silent_snapshot.right64, silent_snapshot.average64);
 }
 
 TEST(AudioResponseMonoTest, ResumeAfterStaleDoesNotAnalyzeRetainedOldSamples) {
