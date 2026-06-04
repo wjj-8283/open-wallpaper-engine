@@ -445,6 +445,16 @@ extern "C" const char* owe_property_scaling_factor(void)
     return property_name(wallpaper::PROPERTY_SCALINGFACTOR);
 }
 
+extern "C" const char* owe_property_horizontal_offset(void)
+{
+    return property_name(wallpaper::PROPERTY_HORIZONTAL_OFFSET);
+}
+
+extern "C" const char* owe_property_vertical_offset(void)
+{
+    return property_name(wallpaper::PROPERTY_VERTICAL_OFFSET);
+}
+
 extern "C" const char* owe_property_horizontal_flip(void)
 {
     return property_name(wallpaper::PROPERTY_HORIZONTAL_FLIP);

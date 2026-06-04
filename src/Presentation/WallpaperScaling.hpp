@@ -39,7 +39,9 @@ WallpaperScalingLayout ComputeWallpaperScalingLayout(
     uint32_t display_logical_width,
     uint32_t display_logical_height,
     double display_scale_factor,
-    double wallpaper_scale_factor);
+    double wallpaper_scale_factor,
+    double horizontal_offset,
+    double vertical_offset);
 
 VkViewport MakeWallpaperViewport(const WallpaperScalingLayout& layout);
 VkRect2D   MakeWallpaperScissor(const WallpaperScalingLayout& layout);

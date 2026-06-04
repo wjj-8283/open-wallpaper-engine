@@ -100,6 +100,7 @@ struct VulkanRender::Impl {
     void UpdateCameraFillMode(Scene&, wallpaper::FillMode);
     void SetWallpaperScalingMode(wallpaper::WallpaperScalingMode);
     void SetWallpaperScalingFactor(double);
+    void SetWallpaperOffset(double horizontal, double vertical);
     void SetWallpaperHorizontalFlip(bool);
 
     bool initRes();
@@ -134,6 +135,8 @@ struct VulkanRender::Impl {
     WallpaperScalingLayout                m_scaling_layout {};
     WallpaperScalingMode                  m_scaling_mode { WallpaperScalingMode::FIT };
     double                                m_scaling_factor { 1.0 };
+    double                                m_horizontal_offset { 0.0 };
+    double                                m_vertical_offset { 0.0 };
     bool                                  m_horizontal_flip { false };
     double                                m_display_scale_factor { 1.0 };
     VkExtent2D                            m_requested_render_extent {};
@@ -176,6 +179,9 @@ void VulkanRender::SetWallpaperScalingMode(wallpaper::WallpaperScalingMode mode)
 }
 void VulkanRender::SetWallpaperScalingFactor(double factor) {
     pImpl->SetWallpaperScalingFactor(factor);
+}
+void VulkanRender::SetWallpaperOffset(double horizontal, double vertical) {
+    pImpl->SetWallpaperOffset(horizontal, vertical);
 }
 void VulkanRender::SetWallpaperHorizontalFlip(bool enabled) {
     pImpl->SetWallpaperHorizontalFlip(enabled);
@@ -697,7 +703,9 @@ void VulkanRender::Impl::updateScalingLayout(const Scene& scene, uint32_t output
                                                      logical_width,
                                                      logical_height,
                                                      scale_factor,
-                                                     m_scaling_factor);
+                                                     m_scaling_factor,
+                                                     m_horizontal_offset,
+                                                     m_vertical_offset);
 }
 
 void VulkanRender::Impl::UpdateCameraFillMode(wallpaper::Scene&   scene,
@@ -758,6 +766,12 @@ void VulkanRender::Impl::SetWallpaperScalingMode(wallpaper::WallpaperScalingMode
 void VulkanRender::Impl::SetWallpaperScalingFactor(double factor) {
     m_scaling_factor = NormalizeScaleFactor(factor);
     LOG_INFO("wallpaper scaling factor: %.3f", m_scaling_factor);
+}
+
+void VulkanRender::Impl::SetWallpaperOffset(double horizontal, double vertical) {
+    m_horizontal_offset = std::isfinite(horizontal) ? horizontal : 0.0;
+    m_vertical_offset = std::isfinite(vertical) ? vertical : 0.0;
+    LOG_INFO("wallpaper offset: %.1f, %.1f", m_horizontal_offset, m_vertical_offset);
 }
 
 void VulkanRender::Impl::SetWallpaperHorizontalFlip(bool enabled) {

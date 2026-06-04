@@ -466,6 +466,8 @@ public:
         CMD_SET_FILLMODE,
         CMD_SET_SCALINGMODE,
         CMD_SET_SCALINGFACTOR,
+        CMD_SET_HORIZONTAL_OFFSET,
+        CMD_SET_VERTICAL_OFFSET,
         CMD_SET_HORIZONTAL_FLIP,
         CMD_SET_AUDIO_RESPONSE_ENABLED,
         CMD_SET_MEDIA_INTEGRATION_ENABLED,
@@ -497,6 +499,8 @@ public:
                 CASE_CMD(SET_FILLMODE);
                 CASE_CMD(SET_SCALINGMODE);
                 CASE_CMD(SET_SCALINGFACTOR);
+                CASE_CMD(SET_HORIZONTAL_OFFSET);
+                CASE_CMD(SET_VERTICAL_OFFSET);
                 CASE_CMD(SET_HORIZONTAL_FLIP);
                 CASE_CMD(SET_AUDIO_RESPONSE_ENABLED);
                 CASE_CMD(SET_MEDIA_INTEGRATION_ENABLED);
@@ -566,6 +570,7 @@ private:
         m_render->compileRenderGraph(*m_scene, *m_rg);
         m_render->SetWallpaperScalingMode(m_scalingmode);
         m_render->SetWallpaperScalingFactor(m_scalingfactor);
+        m_render->SetWallpaperOffset(m_horizontal_offset, m_vertical_offset);
         m_render->SetWallpaperHorizontalFlip(m_horizontal_flip);
         if (m_fillmode_explicit) {
             m_render->UpdateCameraFillMode(*m_scene, m_fillmode);
@@ -680,6 +685,24 @@ private:
             }
         }
     }
+    MHANDLER_CMD(SET_HORIZONTAL_OFFSET) {
+        float value;
+        if (msg->findFloat("value", &value)) {
+            m_horizontal_offset = value;
+            if (renderInited()) {
+                m_render->SetWallpaperOffset(m_horizontal_offset, m_vertical_offset);
+            }
+        }
+    }
+    MHANDLER_CMD(SET_VERTICAL_OFFSET) {
+        float value;
+        if (msg->findFloat("value", &value)) {
+            m_vertical_offset = value;
+            if (renderInited()) {
+                m_render->SetWallpaperOffset(m_horizontal_offset, m_vertical_offset);
+            }
+        }
+    }
     MHANDLER_CMD(SET_HORIZONTAL_FLIP) {
         bool value { false };
         if (msg->findBool("value", &value)) {
@@ -749,6 +772,7 @@ private:
             m_render->init(*info);
             m_render->SetWallpaperScalingMode(m_scalingmode);
             m_render->SetWallpaperScalingFactor(m_scalingfactor);
+            m_render->SetWallpaperOffset(m_horizontal_offset, m_vertical_offset);
             m_render->SetWallpaperHorizontalFlip(m_horizontal_flip);
             m_render->SetVideoPlaybackRate(m_speed);
             m_render->SetVideoPlaybackPaused(! frame_timer.Running());
@@ -811,6 +835,8 @@ private:
     bool                                     m_fillmode_explicit { false };
     WallpaperScalingMode                     m_scalingmode { WallpaperScalingMode::FIT };
     float                                    m_scalingfactor { 1.0f };
+    float                                    m_horizontal_offset { 0.0f };
+    float                                    m_vertical_offset { 0.0f };
     bool                                     m_horizontal_flip { false };
     bool                                     m_media_integration_enabled { false };
     std::optional<SystemMediaArtworkPayload> m_pending_system_media_artwork {};
@@ -1026,6 +1052,22 @@ MHANDLER_CMD_IMPL(MainHandler, SET_PROPERTY) {
             if (msg->findFloat("value", &value)) {
                 auto nmsg =
                     CreateMsgWithCmd(m_render_handler, RenderHandler::CMD::CMD_SET_SCALINGFACTOR);
+                nmsg->setFloat("value", value);
+                nmsg->post();
+            }
+        } else if (property == PROPERTY_HORIZONTAL_OFFSET) {
+            float value;
+            if (msg->findFloat("value", &value)) {
+                auto nmsg = CreateMsgWithCmd(
+                    m_render_handler, RenderHandler::CMD::CMD_SET_HORIZONTAL_OFFSET);
+                nmsg->setFloat("value", value);
+                nmsg->post();
+            }
+        } else if (property == PROPERTY_VERTICAL_OFFSET) {
+            float value;
+            if (msg->findFloat("value", &value)) {
+                auto nmsg = CreateMsgWithCmd(
+                    m_render_handler, RenderHandler::CMD::CMD_SET_VERTICAL_OFFSET);
                 nmsg->setFloat("value", value);
                 nmsg->post();
             }

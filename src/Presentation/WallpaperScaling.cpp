@@ -29,7 +29,9 @@ WallpaperScalingLayout ComputeWallpaperScalingLayout(
     uint32_t display_logical_width,
     uint32_t display_logical_height,
     double display_scale_factor,
-    double wallpaper_scale_factor)
+    double wallpaper_scale_factor,
+    double horizontal_offset,
+    double vertical_offset)
 {
     WallpaperScalingLayout layout {};
     layout.scene_width = std::max<uint32_t>(1, scene_width);
@@ -69,8 +71,10 @@ WallpaperScalingLayout ComputeWallpaperScalingLayout(
 
     const double logical_width = layout.scene_width * layout.scale_x;
     const double logical_height = layout.scene_height * layout.scale_y;
-    const double logical_x = (layout.display_logical_width - logical_width) * 0.5;
-    const double logical_y = (layout.display_logical_height - logical_height) * 0.5;
+    const double logical_x =
+        (layout.display_logical_width - logical_width) * 0.5 + horizontal_offset;
+    const double logical_y =
+        (layout.display_logical_height - logical_height) * 0.5 + vertical_offset;
 
     layout.viewport_px = PixelRect {
         round_px(logical_x * display_scale_factor),

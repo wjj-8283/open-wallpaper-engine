@@ -120,6 +120,8 @@ int owe_scene_wallpaper_apply_system_media_artwork(owe_scene_wallpaper* scene, u
  */
 const char* owe_property_scaling_mode(void);
 const char* owe_property_scaling_factor(void);
+const char* owe_property_horizontal_offset(void);
+const char* owe_property_vertical_offset(void);
 const char* owe_property_horizontal_flip(void);
 const char* owe_property_audio_response_enabled(void);
 const char* owe_property_media_integration_enabled(void);
