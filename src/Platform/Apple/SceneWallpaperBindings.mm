@@ -372,6 +372,41 @@ extern "C" int owe_scene_wallpaper_set_property_string(
     return 0;
 }
 
+extern "C" int owe_scene_wallpaper_set_first_frame_callback(
+    owe_scene_wallpaper* scene,
+    void (*callback)(void* user_data),
+    void* user_data,
+    void (*drop)(void* user_data))
+{
+    clear_last_error();
+    if (!valid_scene(scene)) return finish_with_error("scene must not be null");
+
+    struct CCallbackContext {
+        void* user_data;
+        void (*drop)(void*);
+        ~CCallbackContext()
+        {
+            if (drop && user_data) {
+                drop(user_data);
+            }
+        }
+    };
+
+    auto ctx       = std::make_shared<CCallbackContext>();
+    ctx->user_data = user_data;
+    ctx->drop      = drop;
+
+    auto cb = std::make_shared<wallpaper::FirstFrameCallback>(
+        [callback, ctx]() {
+            if (callback) {
+                callback(ctx->user_data);
+            }
+        });
+
+    scene->scene.setPropertyObject(wallpaper::PROPERTY_FIRST_FRAME_CALLBACK, cb);
+    return 0;
+}
+
 extern "C" int owe_scene_wallpaper_set_audio_volume(owe_scene_wallpaper* scene, float volume)
 {
     clear_last_error();

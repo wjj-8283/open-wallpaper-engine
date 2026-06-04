@@ -95,6 +95,19 @@ int owe_scene_wallpaper_set_property_string(owe_scene_wallpaper* scene, const ch
                                             const char* value);
 
 /*
+ * Registers a first-frame callback with the renderer.
+ *
+ * `callback` is invoked on the render thread when the first frame completes.
+ * `user_data` is passed to both `callback` and `drop`. `drop` is called once
+ * when the callback is replaced or the scene is destroyed. All three pointer
+ * arguments may be null.
+ */
+int owe_scene_wallpaper_set_first_frame_callback(owe_scene_wallpaper* scene,
+                                                 void (*callback)(void* user_data),
+                                                 void* user_data,
+                                                 void (*drop)(void* user_data));
+
+/*
  * Scene-global audio controls.
  *
  * These are thin wrappers only. The actual audio mixer state remains owned by
